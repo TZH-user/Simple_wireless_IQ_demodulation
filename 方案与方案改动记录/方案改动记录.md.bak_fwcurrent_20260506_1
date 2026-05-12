@@ -1,0 +1,69 @@
+﻿# 方案改动记录
+
+## 2026-05-06
+
+### 方案来源
+- 调度书：`D:/CodexProject/2026年校电赛/多AI执行调度书_20260506.md`
+- 决策书：`D:/CodexProject/2026年校电赛/决策书_参数分析审查_20260506.md`
+
+### 本轮采用方案
+- `sigdet`：只补“最终锁定结果”日志，不打开完整 VPP 全过程日志
+- `ASK`：采用 `env + edge + freq` 最小改动判据
+- `PSK`：采用简化联合判据，不做 FFT，不做最大似然，不做方案 C
+
+### 本轮落地参数
+- `APP_MODDET_AM_ENV_PM_THRESHOLD = 350`
+- `APP_MODDET_ASK_MIN_EDGE_PM = 40`
+- `APP_MODDET_ASK_MIN_FREQ_PM = 80`
+- `APP_MODDET_PSK_JUMP_PM_THRESHOLD = 12`
+- `APP_MODDET_PSK_MIN_POS_PERCENT = 80`
+- `APP_MODDET_PSK_MAX_NEG_PERCENT = 20`
+- `APP_MODDET_PSK_MAX_ENV_PM = 200`
+
+### 本轮分类顺序
+- `NO_CARRIER`
+- `ASK`
+- `AM`
+- `PSK`
+- `FSK`
+- `FM`
+- `CW`
+
+### 暂未执行
+- FFT 辅助判别
+- PSK 最大似然/星座匹配
+- ASK 方案 B
+- PSK 方案 C
+
+### 备注
+- 经验仅供参考，不视为绝对结论。
+- 本轮仅完成代码侧最小改动，是否通过仍需后续测试数据验证。
+
+### 2026-05-06 第二轮版本一致性确认
+- 方案来源：`D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/01_方案决策AI_决策输出_20260506.md`
+- 本轮未改动：`ASK/PSK` 判据、阈值、DDS/ADC 主链路
+- 本轮只落地：
+  - 添加唯一 `fw_id` 启动日志
+  - 复核 `sigdet_final` 输出链路
+- 当前固件标识：`fw_id,moddet_review2_20260506,build=20260506_0308,ask=edge_freq,psk=pos_only`
+- 已验证结论：
+  - `fw_id` 不依赖锁定状态，任务启动后即可发送
+  - `sigdet_final` 位于 `app_signal_detect_finish_locked()`，输出链路为 `print_queue_send_log()`
+  - `sigdet_final` 不受 `APP_SIGDET_VPP_UART_TRACE_ENABLE` 宏控制
+- 经验建议：
+  - 版本一致性确认阶段优先使用显式时间戳 `build=YYYYMMDD_HHMM`，比 `__DATE__` / `__TIME__` 更适合串口检索
+  - 经验仅供参考，不视为绝对结论
+
+### 2026-05-06 编码规则补充执行
+- 本次不改业务方案，只按总控编码规则修正文档编码与损坏内容
+- 已验证结论：中文 Markdown 协作文档应统一为 `UTF-8 with BOM`
+- 经验建议：读取中文 Markdown 必须显式 `-Encoding UTF8`；经验仅供参考，不视为绝对结论
+
+### 2026-05-06 调度门禁收紧
+- 本次不改算法方案，只收紧执行顺序与放行条件
+- 已验证结论：
+  - 只有“实时串口 `fw_id`”与“采集日志 `fw_id`”都成立后，最小验证集才可视为有效输入
+  - 若实时串口有 `fw_id` 但采集日志没有，则优先问题在采集链路，不在算法判据
+- 经验建议：
+  - 后续涉及多 AI 串行协作时，把“实时观测门槛”和“采集文件门槛”拆成两级，能更快定位责任边界
+  - 经验仅供参考，不视为绝对结论

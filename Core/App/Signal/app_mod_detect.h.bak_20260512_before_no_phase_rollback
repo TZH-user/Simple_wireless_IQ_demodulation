@@ -1,0 +1,202 @@
+#ifndef APP_MOD_DETECT_H
+#define APP_MOD_DETECT_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* 宏定义说明：APP_MODDET_DEFAULT_SAMPLE_RATE_HZ 是调制识别默认采样率，单位 Hz。 */
+#ifndef APP_MODDET_DEFAULT_SAMPLE_RATE_HZ
+#define APP_MODDET_DEFAULT_SAMPLE_RATE_HZ     2048000UL
+#endif
+
+/* 宏定义说明：APP_MODDET_MAX_BLOCK_SAMPLES 是调制识别单次最多处理的 IQ 采样点数。 */
+#ifndef APP_MODDET_MAX_BLOCK_SAMPLES
+#define APP_MODDET_MAX_BLOCK_SAMPLES          4096U
+#endif
+
+/* 宏定义说明：APP_MODDET_FFT_LEN 是包络/相位特征分析使用的 FFT 长度。 */
+#ifndef APP_MODDET_FFT_LEN
+#define APP_MODDET_FFT_LEN                    1024U
+#endif
+
+/* 宏定义说明：APP_MODDET_ADC_MID_CODE 是 ADC 去中心时使用的默认中点码值。 */
+#ifndef APP_MODDET_ADC_MID_CODE
+#define APP_MODDET_ADC_MID_CODE               8192
+#endif
+
+/* 宏定义说明：APP_MODDET_MIN_AC_POWER 是判定存在有效交流信号的最小平均功率。 */
+#ifndef APP_MODDET_MIN_AC_POWER
+#define APP_MODDET_MIN_AC_POWER               120U
+#endif
+
+/* 宏定义说明：APP_MODDET_AM_ENV_PM_THRESHOLD 是 AM/ASK 包络变化判定门限，单位千分比。 */
+#ifndef APP_MODDET_AM_ENV_PM_THRESHOLD
+#define APP_MODDET_AM_ENV_PM_THRESHOLD        450U
+#endif
+
+/* 宏定义说明：APP_MODDET_FREQ_ACTIVITY_THRESHOLD 是 FM 类频率活动判定门限，单位千分比。 */
+#ifndef APP_MODDET_FREQ_ACTIVITY_THRESHOLD
+#define APP_MODDET_FREQ_ACTIVITY_THRESHOLD    28U
+#endif
+
+/* 宏定义说明：APP_MODDET_PSK_MIN_FREQ_PM 是 PSK 判定所需的最小频率活动门限。 */
+#ifndef APP_MODDET_PSK_MIN_FREQ_PM
+#define APP_MODDET_PSK_MIN_FREQ_PM            50U
+#endif
+
+/* 宏定义说明：APP_MODDET_PSK_MAX_FREQ_PM 是 PSK 判定允许的最大频率活动门限。 */
+#ifndef APP_MODDET_PSK_MAX_FREQ_PM
+#define APP_MODDET_PSK_MAX_FREQ_PM            220U
+#endif
+
+/* 宏定义说明：APP_MODDET_PSK_MIN_EDGE_PM 是 PSK 判定所需的最小边沿活动门限。 */
+#ifndef APP_MODDET_PSK_MIN_EDGE_PM
+#define APP_MODDET_PSK_MIN_EDGE_PM            40U
+#endif
+
+/* 宏定义说明：APP_MODDET_PSK_MAX_HIST_PEAKS 是 PSK 判定允许的 dphi 直方图峰值上限。 */
+#ifndef APP_MODDET_PSK_MAX_HIST_PEAKS
+#define APP_MODDET_PSK_MAX_HIST_PEAKS         2U
+#endif
+
+/* 宏定义说明：APP_MODDET_FSK_MIN_FREQ_PM 是 FSK 判定所需的最小频率活动门限。 */
+#ifndef APP_MODDET_FSK_MIN_FREQ_PM
+#define APP_MODDET_FSK_MIN_FREQ_PM            40U
+#endif
+
+/* 宏定义说明：APP_MODDET_SIGN_DOMINANT_PERCENT 是单方向频率活动占优的百分比门限。 */
+#ifndef APP_MODDET_SIGN_DOMINANT_PERCENT
+#define APP_MODDET_SIGN_DOMINANT_PERCENT      75U
+#endif
+
+/* 宏定义说明：APP_MODDET_SIGN_MINOR_PERCENT 是单方向频率活动占优时另一方向允许的百分比上限。 */
+#ifndef APP_MODDET_SIGN_MINOR_PERCENT
+#define APP_MODDET_SIGN_MINOR_PERCENT         25U
+#endif
+
+/* 宏定义说明：APP_MODDET_ASK_MIN_EDGE_PM 是 ASK 判定所需的最小包络边沿活动门限。 */
+#ifndef APP_MODDET_ASK_MIN_EDGE_PM
+#define APP_MODDET_ASK_MIN_EDGE_PM            40U
+#endif
+
+/* 宏定义说明：APP_MODDET_ASK_MIN_FREQ_PM 是 ASK 判定辅助使用的最小频率活动门限。 */
+#ifndef APP_MODDET_ASK_MIN_FREQ_PM
+#define APP_MODDET_ASK_MIN_FREQ_PM            80U
+#endif
+
+/* 宏定义说明：APP_MODDET_ASK_STRONG_ENV_PM 是强 ASK 包络变化门限。 */
+#ifndef APP_MODDET_ASK_STRONG_ENV_PM
+#define APP_MODDET_ASK_STRONG_ENV_PM          850U
+#endif
+
+/* 宏定义说明：APP_MODDET_ASK_STRONG_EDGE_PM 是强 ASK 包络边沿门限。 */
+#ifndef APP_MODDET_ASK_STRONG_EDGE_PM
+#define APP_MODDET_ASK_STRONG_EDGE_PM         35U
+#endif
+
+/* 宏定义说明：APP_MODDET_ENV_LEVEL_BINS 是包络电平粗分箱数量。 */
+#ifndef APP_MODDET_ENV_LEVEL_BINS
+#define APP_MODDET_ENV_LEVEL_BINS             8U
+#endif
+
+/* 宏定义说明：APP_MODDET_DPHI_ZERO_PM_THRESHOLD 是判定相邻相位差近似为零的门限。 */
+#ifndef APP_MODDET_DPHI_ZERO_PM_THRESHOLD
+#define APP_MODDET_DPHI_ZERO_PM_THRESHOLD     8U
+#endif
+
+/* 宏定义说明：APP_MODDET_DPHI_STRONG_PM_THRESHOLD 是判定相邻相位差为强跳变的门限。 */
+#ifndef APP_MODDET_DPHI_STRONG_PM_THRESHOLD
+#define APP_MODDET_DPHI_STRONG_PM_THRESHOLD   40U
+#endif
+
+/* 宏定义说明：APP_MODDET_HIST_PEAK_MIN_PERCENT 是 dphi 直方图有效峰的最小占比。 */
+#ifndef APP_MODDET_HIST_PEAK_MIN_PERCENT
+#define APP_MODDET_HIST_PEAK_MIN_PERCENT      10U
+#endif
+
+/* 宏定义说明：APP_MODDET_PSK_JUMP_PM_THRESHOLD 是 PSK 相位跳变判定门限。 */
+#ifndef APP_MODDET_PSK_JUMP_PM_THRESHOLD
+#define APP_MODDET_PSK_JUMP_PM_THRESHOLD      10U
+#endif
+
+/* 宏定义说明：APP_MODDET_PSK_MAX_ENV_PM 是 PSK 判定允许的最大包络变化门限。 */
+#ifndef APP_MODDET_PSK_MAX_ENV_PM
+#define APP_MODDET_PSK_MAX_ENV_PM             200U
+#endif
+
+/* 宏定义说明：APP_MODDET_UART_TRACE_ENABLE 控制是否输出调制识别串口日志。 */
+#ifndef APP_MODDET_UART_TRACE_ENABLE
+#define APP_MODDET_UART_TRACE_ENABLE          1U
+#endif
+
+/* 宏定义说明：APP_MODDET_TRACE_DECIMATION_BLOCKS 控制调制识别日志抽取间隔。 */
+#ifndef APP_MODDET_TRACE_DECIMATION_BLOCKS
+#define APP_MODDET_TRACE_DECIMATION_BLOCKS    64U
+#endif
+
+typedef enum
+{
+    APP_MODDET_MODE_UNKNOWN = 0,
+    APP_MODDET_MODE_NO_CARRIER,
+    APP_MODDET_MODE_CW,
+    APP_MODDET_MODE_AM,
+    APP_MODDET_MODE_ASK,
+    APP_MODDET_MODE_FM,
+    APP_MODDET_MODE_FSK,
+    APP_MODDET_MODE_PSK
+} app_mod_detect_mode_t;
+
+typedef struct
+{
+    uint32_t sample_rate_hz;
+    uint16_t min_block_samples;
+    uint16_t reserved;
+} app_mod_detect_config_t;
+
+typedef struct
+{
+    app_mod_detect_mode_t mode;
+    app_mod_detect_mode_t stable_mode;
+    uint16_t stable_confidence_percent;
+    uint16_t reserved0;
+    uint32_t block_count;
+    uint32_t ac_power;
+    uint32_t env_variation_pm;
+    uint32_t env_edge_pm;
+    uint32_t freq_activity;
+    int32_t freq_bias;
+    uint32_t fsk_balance_pm;
+    uint32_t psk_jump_pm;
+    uint32_t modulation_rate_hz;
+    uint32_t am_depth_pm;
+    uint32_t fm_deviation_hz;
+    uint32_t fsk_shift_hz;
+    int32_t residual_freq_hz;
+    uint16_t env_level_count;
+    uint16_t dphi_hist_peak_count;
+    uint16_t positive_freq_percent;
+    uint16_t negative_freq_percent;
+    uint8_t carrier_present;
+    uint8_t reserved[3];
+} app_mod_detect_status_t;
+
+/* 函数跳转：调用 app_mod_detect_init()，初始化调制识别状态机和 FFT 工作参数。 */
+void app_mod_detect_init(const app_mod_detect_config_t *config);
+
+/* 函数跳转：调用 app_mod_detect_process_iq_block()，对一个 IQ block 执行调制特征提取和模式投票。 */
+void app_mod_detect_process_iq_block(const uint16_t *i_buf, const uint16_t *q_buf, uint32_t sample_cnt);
+
+/* 函数跳转：调用 app_mod_detect_get_status()，读取最近一次调制识别状态快照。 */
+void app_mod_detect_get_status(app_mod_detect_status_t *status_out);
+
+/* 函数跳转：调用 app_mod_detect_mode_name()，把调制模式枚举转换为日志可读字符串。 */
+const char *app_mod_detect_mode_name(app_mod_detect_mode_t mode);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* APP_MOD_DETECT_H */

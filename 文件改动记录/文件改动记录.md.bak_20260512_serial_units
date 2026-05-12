@@ -1,0 +1,1249 @@
+﻿# 文件改动记录
+
+## 2026-05-10 IQ 旋转验收日志
+
+### 本次任务
+- 用户要求增加更适合验证 IQ 矫正效果的日志输出
+
+### 已修改文件
+- `Core/App/Tasks/AdcTask.c`
+  - 新增 `IQ_PREPROC_VERIFY_WINDOW_SAMPLES`
+  - 新增 `adc_iq_preproc_verify_t`
+  - 新增头尾窗口相位差计算与 `adc_iq_preproc_update_verify()`
+  - 在 `rotate_block_u16()` 成功后，每秒抽取一次最新 block，生成原始/矫正后头尾相位差对比快照
+  - `adc_log_iq_preproc_1s()` 新增 `iq_rot,...` 日志输出
+- `Core/App/Tasks/PrintfTask.c`
+  - 更新 `fw_id` 为 `iq_rotate_eval_20260510`
+
+### 新增日志说明
+- `iq_pre,...`
+  - 仍输出预处理器内部估计值
+- `iq_rot,...`
+  - `raw_du`：原始 IQ block 头尾相位差，单位 `urad`
+  - `rot_du`：矫正后 IQ block 头尾相位差，单位 `urad`
+  - `imp_pm`：相位差缩减量，千分比表示；正值代表矫正后更接近 0
+  - `rhm/rtm`：原始 IQ 头/尾窗口均值矢量幅度
+  - `chm/ctm`：矫正后 IQ 头/尾窗口均值矢量幅度
+  - `ov`：生成该快照时的 `adc_overrun_cnt`
+  - `rb`：生成该快照时的 `app_iq_preproc_rotate_block_cnt`
+
+### 说明
+- 本次日志专门用于“矫正效果验收”，不改 ADC/DMA 主链和 IQ 预处理核心算法
+- 验收重点是看 `|rot_du|` 是否显著小于 `|raw_du|`，同时 `ov` 是否保持不增长
+
+### 2026-05-10 补充：ADC 日志统一迁回 LOG 模块
+- 用户反馈：新加的旋转验收日志无输出，且要求日志逻辑放到 `Core/App/LOG`，不要继续放在 `AdcTask.c`
+- 修改文件：
+  - `Core/App/LOG/app_adc_log.h`
+    - 新增 `app_adc_log_iq_verify_snapshot_t`
+    - `app_adc_log_iq_preproc_1s()` 增加 rotate 验收快照参数
+  - `Core/App/LOG/app_adc_log.c`
+    - `iq_pre` 仍在此输出
+    - 新增更短的 `iq_rot,rd=...,cd=...,ip=...,rh=...,rt=...,ch=...,ct=...,ov=...,rb=...`
+  - `Core/App/Tasks/AdcTask.c`
+    - 删除本地 `adc_log_health_1s()`、`adc_log_algo_1s()`、`adc_log_iq_preproc_1s()`、`adc_range_log()`
+    - 改为在任务尾部整理快照并统一调用 `app_adc_log_*()` 接口
+- 编译结果：
+  - `Debug` 构建通过
+  - `DTCMRAM: 92368 B / 128 KB (70.47%)`
+  - `FLASH: 615204 B / 2 MB (29.34%)`
+
+### 2026-05-10 补充：IQ 日志触发点前移
+- 用户反馈：`rotate_block_cnt` 和 `block_count` 持续增长，但串口日志停在启动阶段，怀疑 `AdcTask` 在高负载下长期回不到任务尾部日志区
+- 修改文件：
+  - `Core/App/Tasks/AdcTask.c`
+    - 将 `app_adc_log_iq_preproc_1s()` 的触发点前移到 `app_iq_preproc_rotate_block_u16()` 成功之后
+    - 删除任务尾部对同一组 IQ 日志的重复调用
+- 目的：
+  - 在 `adc_overrun_cnt` 较高、内层 block 处理循环长期不退出时，仍然给 `iq_pre/iq_rot` 输出机会
+  - 不改 rotate 算法，只改日志触发时机
+- 编译结果：
+  - `Debug` 构建通过
+  - `DTCMRAM: 92368 B / 128 KB (70.47%)`
+  - `FLASH: 615204 B / 2 MB (29.34%)`
+
+### 2026-05-10 补充：去掉当前无消费方的整块旋转
+- 用户反馈：`rotate_block_cnt` 持续增长但日志饿死，考虑将没必要的计算先移出主算法
+- 判断：
+  - 当前 `iq_preproc_i_buf/q_buf` 还没有真正送入后级业务链
+  - 整块 `4096` 点逐点旋转是当前最重的计算，但现阶段没有实际消费者
+- 修改文件：
+  - `Core/App/Tasks/AdcTask.c`
+    - 新增 `ADC_IQ_PREPROC_ROTATE_RUNTIME_ENABLE`，当前默认 `0`
+    - 当前主线改为优先调用 `app_iq_preproc_analyze_block_u16()`
+    - 仅在后续明确需要时，再切回 `rotate_block_u16()`
+    - `iq_rot` 验证快照计算仅在 runtime rotate 打开时编译
+  - `Core/App/Tasks/PrintfTask.c`
+    - `fw_id` 更新为 `iq_pre_light_20260510`
+- 目的：
+  - 先恢复实时性和串口日志可观察性
+  - 保留残余频偏估计链，暂不做当前无人消费的整块相位旋转
+
+### 2026-05-10 补充：改为轻量虚拟矫正验收
+- 用户明确要求继续验证：
+  - `|cd|` 是否小于 `|rd|`
+  - `ip` 是否大于 `0`
+  - `ov` 是否继续恶化
+- 调整方案：
+  - 不恢复整块 `4096` 点逐点旋转输出
+  - 改为在 `analyze` 路径上，每秒仅对头尾小窗口做“虚拟去旋转验证”
+  - 继续输出 `iq_rot,rd=...,cd=...,ip=...,ov=...`
+- 修改文件：
+  - `Core/App/Tasks/AdcTask.c`
+    - 新增 `adc_calc_edge_phase_virtual_rot_u16()`
+    - `adc_iq_preproc_update_verify()` 改为基于 `phase_acc_rad/residual_rad_per_sample` 做轻量窗口验证
+    - `analyze_block_u16()` 成功后也会更新 `iq_preproc_verify`
+  - `Core/App/Tasks/PrintfTask.c`
+    - `fw_id` 更新为 `iq_verify_light_20260510`
+- 目的：
+  - 保留你要的 `rd/cd/ip/ov` 验证指标
+  - 同时避免整块逐点旋转再次压垮实时性
+
+### 2026-05-10 补充：修复 `iq_rot` 与 `iq_pre` 节流错相
+- 现象：
+  - `iq_pre` 已正常输出
+  - 日志中始终没有 `iq_rot`
+- 原因：
+  - `iq_preproc_verify` 在每个 block 开头都被清零
+  - `iq_rot` 验证快照与 `iq_pre` 的 1 秒日志节流没有对齐时，快照会在输出前被下一 block 清掉
+- 修改文件：
+  - `Core/App/Tasks/AdcTask.c`
+    - 删除 `if (iq_preproc_gate_open != 0U)` 内部对 `iq_preproc_verify` 的逐 block 清零
+    - 仅在进入跟踪态和退出跟踪态时 reset 验证快照
+- 目的：
+  - 让 `iq_rot` 快照在两次更新之间保持有效
+  - 保证下一次 `iq_pre` 日志触发时可以同时带出 `iq_rot`
+- 编译结果：
+  - `Debug` 构建通过
+  - `DTCMRAM: 75984 B / 128 KB (57.97%)`
+  - `FLASH: 615716 B / 2 MB (29.36%)`
+
+## 2026-05-09 ADC 日志模块拆分
+
+### 本次任务
+- 用户要求将 `AdcTask.c` 中与 ADC 相关的日志输出函数迁移到 `Core/App/LOG`，给任务文件瘦身
+
+### 已修改文件
+- `Core/App/LOG/app_adc_log.h`
+  - 新增 ADC 日志模块接口
+  - 新增 health/range 快照结构体
+- `Core/App/LOG/app_adc_log.c`
+  - 新增 `adc_health/sig/iq_pre/adc_range` 四组日志输出实现
+  - 保留原有 1 秒节流和日志文本格式
+- `Core/App/Tasks/AdcTask.c`
+  - 移除本地 `adc_log_health_1s()`、`adc_log_algo_1s()`、`adc_log_iq_preproc_1s()`、`adc_range_log()`
+  - 改为在任务尾部整理快照并调用 `app_adc_log_*()` 接口
+  - 保留 ADC 主链、range 累加、IQ 预处理门控逻辑不变
+- `CMakeLists.txt`
+  - 接入 `Core/App/LOG/app_adc_log.c`
+  - 新增 `Core/App/LOG` 头文件目录
+
+### 编译结果
+- `Debug` 构建通过
+- `DTCMRAM: 75944 B / 128 KB (57.94%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 613756 B / 2 MB (29.27%)`
+
+### 说明
+- 本次只做日志模块拆分，不改 ADC 采样、DMA、载波锁定与 IQ 预处理算法
+- `adc_range_reset()` 仍留在 `AdcTask.c`，仅在日志成功发出后复位统计窗口
+
+## 2026-05-06
+
+### 本次任务
+- 按 `D:/CodexProject/2026年校电赛/多AI执行调度书_20260506.md`
+- 依据 `D:/CodexProject/2026年校电赛/决策书_参数分析审查_20260506.md`
+- 执行“代码改动 AI”最小改动方案
+
+### 已修改文件
+- `Core/App/Signal/app_mod_detect.h`
+  - 新增 `APP_MODDET_ASK_MIN_FREQ_PM`
+  - 修改 `APP_MODDET_ASK_MIN_EDGE_PM` 为 `40`
+  - 修改 `APP_MODDET_PSK_JUMP_PM_THRESHOLD` 为 `12`
+  - 新增 `APP_MODDET_PSK_MIN_POS_PERCENT`
+  - 新增 `APP_MODDET_PSK_MAX_NEG_PERCENT`
+  - 新增 `APP_MODDET_PSK_MAX_ENV_PM`
+- `Core/App/Signal/app_mod_detect.c`
+  - 将 `ASK` 判据改为 `env + edge + freq`
+  - 移除 `env_level_count <= APP_MODDET_ASK_MAX_ENV_LEVELS` 作为 `ASK` 必要条件
+  - 将 `PSK` 判据改为简化联合判据
+  - 保持日志字段 `mode/ac/env/edge/lvl/freq/psk/hist/pos/neg/bias`
+- `Core/App/Signal/app_signal_detect.c`
+  - 新增 `sigdet` 最终锁定日志 `sigdet_final`
+
+### 已备份文件
+- `Core/App/Signal/app_mod_detect.c.bak_20260506_codeai`
+- `Core/App/Signal/app_mod_detect.h.bak_20260506_codeai`
+- `Core/App/Signal/app_signal_detect.c.bak_20260506_codeai`
+
+### 编译结果
+- `Debug` 构建通过
+
+### 2026-05-06 第二轮版本一致性改动
+- 输入：`D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/01_方案决策AI_决策输出_20260506.md`
+- 修改文件：`Core/App/Tasks/AdcTask.c`
+  - 新增一次性 `fw_id` 启动日志：`fw_id,moddet_review2_20260506,build=20260506_0308,ask=edge_freq,psk=pos_only`
+  - `fw_id` 输出位置：`StartAdcTask()` 中 `adc_start_stream()`、`app_signal_detect_init()`、`app_mod_detect_init()` 之后
+  - 修复两处历史乱码注释，避免 GCC 将其识别为未闭合注释
+- 新增备份：`Core/App/Tasks/AdcTask.c.bak_20260506_fw_id`
+- 核查结论：`sigdet_final` 已存在于 `Core/App/Signal/app_signal_detect.c`，走 `print_queue_send_log()`，不受 `APP_SIGDET_VPP_UART_TRACE_ENABLE` 限制
+- 编译结果：`Debug` 构建通过
+
+### 2026-05-06 编码复核与修复
+- 依据：`D:/CodexProject/2026年校电赛/00_总控/多AI协作补充规定_编码与写入方式_20260506.md`
+- 复核文件：第二轮调度书、代码改动AI执行结果、工程记录、知识库踩坑记录
+- 发现问题：5 份 Markdown 均非 `UTF-8 with BOM`；其中第二轮调度书与知识库踩坑记录内容本体已损坏，不只是读取方式错误
+- 处理：先备份损坏文件，再重建/重写为 `UTF-8 with BOM`
+
+### 2026-05-06 调度门禁更新（按当前烧录版本 `fw_id`）
+- 依据：用户明确顺序要求“实时串口 `fw_id` -> 采集日志 `fw_id` -> 最小验证集重采 -> 数据分析 AI”
+- 修改文件：`D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/02_多AI执行调度书_第二轮.md`
+- 结论：
+  - 实时串口必须先看到“当前烧录版本对应的 `fw_id`”；本轮实际示例为 `fw_id,moddet_review2_20260506,build=20260506_0308,ask=edge_freq,psk=pos_only`
+  - 若实时串口有当前烧录版本 `fw_id`，但采集日志没有命中同一版本 `fw_id`，先交测试采数 AI 排查采集脚本、日志过滤、串口抓取链路
+  - 在采集日志命中当前烧录版本 `fw_id` 前，不得重采最小验证集，不得交给数据分析 AI
+
+
+### 2026-05-06 `fw_id` 启动日志链路修复
+- 输入：测试数据 AI 反馈“当前实时串口与采集文件都没有 `fw_id`”
+- 修改文件：`Core/App/Tasks/AdcTask.c`、`Core/App/Tasks/PrintfTask.c`
+- 处理：
+  - 将 `fw_id` 输出点从 `AdcTask` 移到 `PrintfTask`
+  - 由 `PrintfTask` 在启动后直接通过 `HAL_UART_Transmit()` 输出
+  - 以 500ms 周期重复输出 4 次，覆盖上电早期抓取窗口
+- 核查结论：
+  - `PrintQueueHandle` 在 RTOS 初始化时已创建
+  - `PrintfTask` 在线程创建顺序上先于 `AdcTask`
+  - `g_uart_mode` 默认值仍为 `UART_MODE_LOG`
+- 编译结果：`Debug` 构建通过
+
+### 2026-05-06 `fw_id` 启动日志链路修复
+- 输入：测试数据 AI 反馈“当前实时串口与采集文件都没有 `fw_id`”
+- 修改文件：`Core/App/Tasks/AdcTask.c`、`Core/App/Tasks/PrintfTask.c`
+- 处理：
+  - 将 `fw_id` 输出点从 `AdcTask` 移到 `PrintfTask`
+  - 由 `PrintfTask` 在启动后直接通过 `HAL_UART_Transmit()` 输出
+  - 以 500ms 周期重复输出 4 次，覆盖上电早期抓取窗口
+- 核查结论：
+  - `PrintQueueHandle` 在 RTOS 初始化时已创建
+  - `PrintfTask` 在线程创建顺序上先于 `AdcTask`
+  - `g_uart_mode` 默认值仍为 `UART_MODE_LOG`
+- 编译结果：`Debug` 构建通过
+
+### 2026-05-06 UI 参数显示接入
+- 输入：调参工程师闭环结果目录 `D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/50_tuning_engineer_full_algo_loop_20260506_092716`
+- 修改文件：`Core/App/Signal/app_mod_detect.h`
+  - 新增稳定模式、置信度、调制率、AM/ASK 深度、FM 频偏、FSK 频移等状态字段
+- 修改文件：`Core/App/Signal/app_mod_detect.c`
+  - 新增低成本参数估计：包络调制率、包络深度、dphi 频偏估计、稳定模式投票
+  - 扩展 `mod` 日志字段：`stable/conf/rate/depth/dev`
+- 修改文件：`Core/App/LVGL/app_lvgl_ui.c`
+  - 将预留 UI 改为调制识别与参数显示
+  - AM 显示调制深度与调制速率，FM 显示平均频偏与调制速率，FSK/ASK/PSK 显示对应估计参数
+- 修改文件：`Core/App/Tasks/PrintfTask.c`
+  - 更新固件标识为 `fw_id,moddet_param_ui_20260506,build=20260506_1040,ask=strong_env_param,psk=sign75_freq220_param`
+- 编译结果：`Debug` 构建通过
+- 说明：本次不改 ADC/DDS 主链路，不改 I/Q 物理通道定义
+
+- 校正：`Core/App/Signal/app_mod_detect.h` 中默认参数估计采样率改为 `3200000UL`，Debug 已重新构建通过。
+
+### 2026-05-06 ADC 幅度余量测试
+- 输入：`D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/14_发给测试采数AI_ADC幅度余量测试任务书_20260506.md`
+- 修改文件：`Core/App/Tasks/AdcTask.c`
+  - 新增 `ADC_RANGE_LOG_ENABLE` 和相关阈值宏
+  - 新增 `adc_range_accum()` — 对每块 ADC 数据统计 I/Q min/max/near-rail/clip
+  - 新增 `adc_range_log()` — 每 1s 输出 `adc_range,imin=...,imax=...,qmin=...,qmax=...,ivpp=...,qvpp=...,iclo=...,ichi=...,qclo=...,qchi=...,inlo=...,inhi=...,qnlo=...,qnhi=...,n=...`
+  - 新增 `adc_range_reset()` — 重置累积统计
+- 修改文件：`Core/App/Tasks/PrintfTask.c`
+  - fw_id 更新为 `fw_id,adc_range_test_20260506,build=20260506_1230,ask=clip_log=1,psk=none`
+- 编译结果：`Debug` 构建通过，DTCMRAM 82.45%, FLASH 28.94%
+- 测试结果：ADC 在 2.0VPP 下无削顶，I/Q 数据范围约 7800-8300 (仅占满量程 0.8%)
+
+## 2026-05-06 工程健康度与调试探针审查
+
+- 新增审查输出：`D:\CodexProject\2026年校电赛\AI分发_方案决策_20260506\17_方案决策AI_工程健康度与调试探针审查_20260506.md`
+- 审查对象：`D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation` 当前源码与用户截图中的 `AdcTask.c` 14-bit ADC 阈值修正。
+- 结论：图片中的 ADC 阈值改动通过；当前工程为测试/调参固件状态，不是最终提交态。
+- 统计：7 处活跃串口输出探针、4 组默认关闭探针、1 组 ADC 幅度测试临时代码、14 个源码目录备份文件、9 行乱码注释。
+- 风险：`adc_raw_to_v_1e4()` 仍按 16-bit 换算但当前路径关闭；`adc_range` 与 `ui/mod` 调试日志仍开启；本地环境缺少 `cmake/ninja`，本轮未能重新构建。
+
+## 2026-05-07 频谱接入回退
+
+- 用户要求：回退到“未接入基带频谱”状态。
+- 修改文件：`CMakeLists.txt`
+  - 移除 `BasebandSpectrumTask.c`
+  - 移除 `app_baseband_spectrum.c`
+  - 移除 CMSIS-DSP 频谱编译源
+  - 移除 `ARM_MATH_CM7` 频谱阶段编译宏
+- 修改文件：`Core/App/Tasks/AdcTask.c`
+  - 移除 `app_baseband_spectrum` 和 `BasebandSpectrumTask` 头文件引用
+  - 移除频谱模块初始化与独立任务启动
+  - 移除锁定后的频谱 block 提交与失锁失效处理
+- 修改文件：`Core/App/LVGL/app_lvgl_ui.c`
+  - 回退到底部“Feature / FFT Area”预留区版本
+  - 删除频谱柱状图与 `bbsp` 状态展示
+- 修改文件：`Core/App/Tasks/PrintfTask.c`
+  - 固件标识回退为 `fw_id,carrier_lockerr_20260507,build=20260507_0209,ask=mod_nochange,psk=sigdet_cond_corr`
+- 删除文件：
+  - `Core/App/Signal/app_baseband_spectrum.c`
+  - `Core/App/Signal/app_baseband_spectrum.h`
+  - `Core/App/Tasks/BasebandSpectrumTask.c`
+  - `Core/App/Tasks/BasebandSpectrumTask.h`
+- 说明：
+  - 保留载波锁定误差修正逻辑
+  - 保留现有调制识别与参数显示
+  - 本次只撤回频谱相关接入
+
+## 2026-05-07 AdcTask BusFault 修复
+
+- 现象：现场调试进入 `BusFault_Handler`，调用链为 `StartAdcTask -> app_mod_detect_process_iq_block -> print_queue_send_log -> osMessageQueuePut`
+- 判断：更像任务栈余量不足后破坏了 FreeRTOS 队列/链表，不像频谱回退逻辑本身错误
+- 修改文件：`Core/Src/freertos.c`
+  - `PrintfTask` 栈从 `256 * 4` 提高到 `512 * 4`
+  - `AdcTask` 栈从 `384 * 4` 提高到 `1024 * 4`
+- 修改文件：`Core/App/Tasks/PrintfTask.c`
+  - `print_queue_send_typed()` 增加 `text / PrintQueueHandle` 空指针保护
+  - 队列发送由 `osWaitForever` 改为 `0U` 超时，拥塞时直接丢弃日志，不阻塞 ADC 路径
+- 修改文件：`Core/App/Tasks/AdcTask.c`
+  - 引入 `FreeRTOS.h` 与 `task.h`
+  - `adc_log_health_1s()` 预留栈高水位日志字段 `stk_adc / stk_printf`
+- 编译结果：`Debug` 构建通过
+
+## 2026-05-07 基带频谱显示接入
+
+### 输入
+- `D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/24_发给改代码AI_基带频谱显示接入任务书_20260507.md`
+- 前置放行：`23_方案决策AI_载波锁定误差审查与基带频谱放行_20260507.md`
+
+### 已修改文件
+- `Core/App/Tasks/AdcTask.c`
+  - 新增 `app_baseband_spectrum` 初始化与独立任务启动
+  - 锁定后只提交 I/Q block 快照，不在 `AdcTask` 内做频谱计算
+  - 未锁定时主动清空频谱状态，避免 UI 显示旧值
+- `Core/App/LVGL/app_lvgl_ui.c`
+  - 底部预留区改为 `Baseband Spectrum`
+  - UI 刷新周期改为 `80ms`
+  - 只读取频谱状态并显示 `valid/peak/mag/noise/dc/LO/Carrier`
+- `Core/App/Tasks/PrintfTask.c`
+  - 固件标识更新为 `fw_id,bbsp_ui_20260507,build=20260507_0235,ask=mod_nochange,psk=bbsp_task`
+- `CMakeLists.txt`
+  - 接入 `BasebandSpectrumTask.c` 与 `app_baseband_spectrum.c`
+- `Core/App/Tasks/BasebandSpectrumTask.c/.h`
+  - 新增独立低优先级频谱任务，负责周期调度与 `bbsp` 日志输出
+- `Core/App/Signal/app_baseband_spectrum.c/.h`
+  - 新增基带频谱状态模块，负责快照抽取后的频谱特征计算
+
+### 已备份文件
+- `Core/App/Tasks/AdcTask.c.bak_20260507_bbsp`
+- `Core/App/LVGL/app_lvgl_ui.c.bak_20260507_bbsp`
+- `Core/App/Tasks/PrintfTask.c.bak_20260507_bbsp`
+- `CMakeLists.txt.bak_20260507_bbsp`
+- `D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/24_发给改代码AI_基带频谱显示接入任务书_20260507.md.bak_20260507_bbsp`
+
+### 编译结果
+- `Debug` 构建通过
+- `DTCMRAM: 111224 B / 128 KB (84.86%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 611984 B / 2 MB (29.18%)`
+## 2026-05-07 复数基带频谱柱状图升级
+
+### 输入
+- 用户确认将待接入方案正式写入当前工程
+- 规格：复数基带频谱，`-100kHz ~ +100kHz`，中心 `0Hz`，`41` 柱，`5kHz` 步进
+
+### 已修改文件
+- `Core/App/Signal/app_baseband_spectrum.h`
+  - 状态结构扩展为 `41` 柱固定频点频谱
+  - 新增 `bars[]`、`bin_hz[]`、`update_tick_ms`
+  - `peak_hz` 改为有符号频率
+- `Core/App/Signal/app_baseband_spectrum.c`
+  - 由摘要频谱升级为复数基带固定频点能量计算
+  - `0Hz` 柱使用 `dc_mag`
+  - 非零频点使用去均值后的复数能量投影
+  - 新增相对归一化柱值输出，范围 `0~1000`
+- `Core/App/LVGL/app_lvgl_ui.c`
+  - 底部频谱区升级为 `LV_CHART_TYPE_BAR` 柱状图
+  - 横轴提示：`-100k / 0 / +100k`
+  - 保留摘要文本显示 `valid/peak/mag/noise/dc/LO/Carrier`
+- `Core/App/Tasks/PrintfTask.c`
+
+## 2026-05-07 实时解调界面接入（进行中）
+
+### 已修改文件
+- `Core/App/LVGL/app_lvgl_ui.c`
+  - 新增识别页/解调页双页面容器
+  - 新增 `Enter Demod` 与 `Back` 按钮
+  - 新增基于 `lv_chart` 的 AM 解调波形显示区
+  - 新增解调页面状态刷新与页面切换逻辑
+  - 进入解调页时启用 `app_demod` 并恢复 `DemodTask`
+  - 返回识别页时关闭 `app_demod` 并挂起 `DemodTask`
+
+### 说明
+- 本次仅修改 UI 层
+- 当前解调页只对 `AM` 有有效波形显示
+- 其他模式先显示 unsupported，占位等待后续算法接入
+  - 固件标识更新为 `fw_id,bbsp_complex_20260507,build=20260507_1130,ask=mod_nochange,psk=bbsp41_goertzel`
+
+### 已备份文件
+- `Core/App/Signal/app_baseband_spectrum.h.bak_20260507_bbspcomplex`
+- `Core/App/Signal/app_baseband_spectrum.c.bak_20260507_bbspcomplex`
+- `Core/App/LVGL/app_lvgl_ui.c.bak_20260507_bbspcomplex`
+- `Core/App/Tasks/PrintfTask.c.bak_20260507_bbspcomplex`
+
+### 编译结果
+- `Debug` 构建通过
+- `DTCMRAM: 111488 B / 128 KB (85.06%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 615920 B / 2 MB (29.37%)`
+
+- [2026-05-07] 修复解调页 Back 按钮失效：LVGL 按钮事件由 LV_EVENT_CLICKED 调整为 LV_EVENT_RELEASED，并将 Back 按钮提升到前景层，减少触摸抖动/层级覆盖导致的失效。
+
+- [2026-05-07] 修复解调页无法退出的调度风险：在 freertos.c 的 USER CODE RTOS_THREADS 中显式提升 TouchTask 到 osPriorityNormal，并将 DemodTask 下调到 osPriorityBelowNormal，避免解调期间触摸任务被饿死。
+
+- [2026-05-07] 新增 [恒温晶振更换后复测清单_20260507.md](D:/VSCodeCMAKEProject/Simple_wireless_IQ_demodulation/恒温晶振更换后复测清单_20260507.md)，用于恒温晶振接入后的最小复测与代码决策。
+
+## 2026-05-07 SI5351 外部参考接入
+
+### 输入与前置基底
+- 用户确认时钟链路采用 `OCXO 10MHz -> SI5351 CLKIN -> SI5351 CLK0 25MHz -> AD9959 REF_CLK`
+- 用户先在 `CubeMX` 中启用 `I2C1`，并绑定 `PB6=I2C1_SCL`、`PB7=I2C1_SDA`
+- 代码侧保持 `AD9959` 现有 `25MHz x 20 = 500MHz SYSCLK` 模型，不改 `ad9959.c`
+
+### 已修改文件
+- `Core/App/Tasks/SI5351.c`
+  - 新增固定功能任务实现，使用 `I2C1` 访问 `SI5351`
+  - 启动时自动探测 `0x60/0x61` 地址
+  - 固定配置 `PLLA: 10MHz CLKIN -> 800MHz`、`CLK0: 25MHz`
+  - 检查 `LOS_CLKIN / LOL_A`，只有参考有效且 PLLA 锁定后才使能 `CLK0`
+  - 运行中若 `CLKIN` 丢失或 PLL 解锁，则关闭 `CLK0` 并输出日志
+- `Core/App/Tasks/SI5351.h`
+  - 新增 `app_si5351_is_clock_ready()` 声明，供 `DDSTask` 查询参考时钟是否就绪
+- `Core/App/Tasks/DDSTask.c`
+  - 在 `AppDDS_Init()` 前等待 `SI5351` 参考就绪
+  - 增加一次性等待/就绪串口日志
+- `CMakeLists.txt`
+  - 将 `Core/App/Tasks/SI5351.c` 加入构建
+
+### 已备份文件
+- `Core/App/Tasks/SI5351.c.bak_20260508_si5351clk`
+- `Core/App/Tasks/DDSTask.c.bak_20260508_si5351clk`
+- `Core/App/Tasks/Types/RtosTypes.h.bak_20260508_si5351clk`
+- `CMakeLists.txt.bak_20260508_si5351clk`
+- `文件改动记录.md.bak_20260508_si5351clk`
+- `方案改动记录.md.bak_20260508_si5351clk`
+
+### 编译结果
+- 使用 `STM32Cube` 自带 `cmake + ninja` 重新构建 `build/Debug`
+- `Debug` 构建通过
+- `DTCMRAM: 76744 B / 128 KB (58.55%)`
+- `RAM: 234656 B / 512 KB (44.76%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 721804 B / 2 MB (34.42%)`
+
+### 说明
+- 本轮未改 `Core/App/DDS_9959/Hardware/ad9959.c`
+- `Core/Inc/i2c.h`、`Core/Src/i2c.c`、`Core/Src/main.c` 属于用户先行 `CubeMX` 生成基底，本轮直接在该基底上接入
+
+## 2026-05-08 SI5351 双路 25MHz 输出
+
+### 输入
+- 用户要求在保持现有 `CLK0=25MHz` 的基础上，再开启 `CLK1=25MHz`
+- 输出用途面向 `AD9959` 参考时钟链路，要求同时考虑驱动强度
+
+### 已修改文件
+- `Core/App/Tasks/SI5351.c`
+  - 新增 `CLK1` 控制寄存器与 `MS1` 参数配置
+  - 将 `CLK1` 配置为与 `CLK0` 同源同频：`PLLA 800MHz / 32 = 25MHz`
+  - 将输出使能逻辑从单路 `CLK0` 扩为同时控制 `CLK0/CLK1`
+  - 启动成功日志更新为 `clk0/clk1=25MHz drive=8mA`
+  - `CLK0/CLK1` 驱动强度固定为 `8mA`
+
+### 已备份文件
+- `Core/App/Tasks/SI5351.c.bak_20260508_clk1dual`
+- `文件改动记录.md.bak_20260508_clk1dual`
+- `方案改动记录.md.bak_20260508_clk1dual`
+
+### 编译结果
+- 使用 `STM32Cube` 自带 `cmake + ninja` 重新构建 `build/Debug`
+- `Debug` 构建通过
+- `DTCMRAM: 76744 B / 128 KB (58.55%)`
+- `RAM: 234656 B / 512 KB (44.76%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 721876 B / 2 MB (34.42%)`
+
+### 说明
+- 本轮仍未改 `Core/App/DDS_9959/Hardware/ad9959.c`
+- 当前先使用 `8mA` 驱动，优先保证送 `AD9959` 时钟线的边沿与裕量；若后续示波器看到明显振铃或过冲，再回调到 `6mA`
+
+## 2026-05-08 IQ 慢速残余相位预旋转
+
+### 输入
+- 用户确认保留零中频思路，并希望先按“累计相位”方向处理 `mHz` 级残余差频
+- 目标是减轻 `I/Q` 两路缓慢交换主幅度、导致参数识别不稳定的问题
+
+### 已修改文件
+- `Core/App/Signal/app_iq_preproc.h`
+  - 新增共享 IQ 预处理接口定义
+- `Core/App/Signal/app_iq_preproc.c`
+  - 新增跨 block 残余相位跟踪与预旋转实现
+  - 基于 block 均值矢量估计慢速相位增量
+  - 对整块 IQ 做数字反旋转，输出校正后的 `uint16_t` I/Q
+- `Core/App/Tasks/ModDetectTask.c`
+  - 在送入 `app_mod_detect_process_iq_block()` 前先调用共享 IQ 预处理
+  - 新增一组调制识别链专用旋转后 I/Q 缓冲区
+- `Core/App/Tasks/DemodTask.c`
+  - 在送入 `app_demod_process_iq_block()` 前先调用共享 IQ 预处理
+  - 新增一组解调链专用旋转后 I/Q 缓冲区
+  - 在解调任务关闭时重置 IQ 预处理状态，避免长时间暂停后沿用旧相位
+- `CMakeLists.txt`
+  - 将 `Core/App/Signal/app_iq_preproc.c` 加入构建
+
+### 已备份文件
+- `Core/App/Tasks/ModDetectTask.c.bak_20260508_iqpreproc`
+- `Core/App/Tasks/DemodTask.c.bak_20260508_iqpreproc`
+- `CMakeLists.txt.bak_20260508_iqpreproc`
+- `文件改动记录.md.bak_20260508_iqpreproc`
+- `方案改动记录.md.bak_20260508_iqpreproc`
+
+### 编译结果
+- 使用 `STM32Cube` 自带 `cmake + ninja` 重新构建 `build/Debug`
+- `Debug` 构建通过
+- `DTCMRAM: 76856 B / 128 KB (58.64%)`
+- `RAM: 267424 B / 512 KB (51.01%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 725976 B / 2 MB (34.62%)`
+
+### 说明
+- 本轮是“第一阶段预处理”：
+  - 先解决跨秒级慢速残余相位旋转
+  - 暂未加入更重的复数圆心/DC 矢量估计
+- 插入点放在 `ModDetectTask` / `DemodTask`，未改 `AdcTask` 高频采集主路径，也未改 `CubeMX` 生成区
+
+## 2026-05-08 解调链临时脱开主线
+
+### 本次修改文件
+- `Core/App/Tasks/AdcTask.c`
+  - 保留 `moddetect_task_submit_block()` 主线
+  - 移除向 `DemodTask` 的实时 IQ 投递，解调任务不再接收 ADC 主线数据
+- `Core/App/LVGL/app_lvgl_ui.c`
+  - 解调页在无输出时改为显示 `standby / detached`
+  - 保留进入解调页与退出返回交互
+
+### 已备份文件
+- `Core/App/Tasks/AdcTask.c.bak_20260508_demod_detach`
+- `Core/App/LVGL/app_lvgl_ui.c.bak_20260508_demod_detach`
+- `文件改动记录.md.bak_20260508_demod_detach`
+- `方案改动记录.md.bak_20260508_demod_detach`
+
+### 编译结果
+- `Debug` 构建通过
+- `DTCMRAM: 76856 B / 128 KB (58.64%)`
+- `RAM: 267424 B / 512 KB (51.01%)`
+- `FLASH: 725580 B / 2 MB (34.60%)`
+
+## 2026-05-08 解调链进一步清理，仅保留空转壳
+
+### 本次修改文件
+- `Core/App/Tasks/DemodTask.c`
+  - 删除快照槽位、队列消费、IQ 预处理与解调处理逻辑
+  - 保留 `demod_task_set_enabled()` 与任务空转/挂起壳
+- `Core/App/Tasks/DemodTask.h`
+  - 删除实时解调提交/统计接口，仅保留 `demod_task_set_enabled()`
+- `Core/App/Signal/Demod/app_demod.c`
+  - 删除实时处理逻辑，仅保留页面状态壳与清零逻辑
+- `Core/App/Signal/Demod/app_demod.h`
+  - 删除实时处理接口声明，保留状态结构与基本控制接口
+- `Core/App/Tasks/AdcTask.c`
+  - 清理无用 `DemodTask.h` 头文件引用
+- `CMakeLists.txt`
+  - 删除 `Core/App/Signal/Demod/app_demod_am.c` 构建项
+
+### 删除文件
+- `Core/App/Signal/Demod/app_demod_am.c`
+- `Core/App/Signal/Demod/app_demod_am.h`
+
+### 重点备份
+- `Core/App/Tasks/AdcTask.c.bak_20260508_demod_detach`
+- `Core/App/LVGL/app_lvgl_ui.c.bak_20260508_demod_detach`
+- `Core/App/Tasks/DemodTask.c.bak_20260508_iqpreproc`（含实时解调 + IQ 预处理版本）
+- `CMakeLists.txt.bak_20260508_iqpreproc`
+- `文件改动记录.md.bak_20260508_demod_detach`
+- `方案改动记录.md.bak_20260508_demod_detach`
+
+### 编译结果
+- `Debug` 构建通过
+- `DTCMRAM: 76112 B / 128 KB (58.07%)`
+- `RAM: 218208 B / 512 KB (41.62%)`
+- `FLASH: 713768 B / 2 MB (34.04%)`
+
+## 2026-05-08 参数识别/调制判别链主线清除，仅保留空转壳
+
+### 本次修改文件
+- `Core/App/Tasks/ModDetectTask.c`
+  - 删除快照槽位、IQ 预处理、调制识别调用与队列消费逻辑
+  - 仅保留 `StartModDetectTask()` 空转延时循环
+- `Core/App/Tasks/ModDetectTask.h`
+  - 保留最小空壳接口，供后续需要时再接回
+- `Core/App/Tasks/AdcTask.c`
+  - 清理 `app_mod_detect.h` / `ModDetectTask.h` 依赖
+  - 清理 `app_mod_detect_init()` 启动调用
+  - 清理调制识别状态日志与 `ModDetectTask` 统计日志
+- `CMakeLists.txt`
+  - 删除 `Core/App/Signal/app_mod_detect.c` 构建项
+  - 删除 `Core/App/Signal/app_iq_preproc.c` 构建项
+  - 删除本轮仅为调制识别算法改写接入的 `CMSIS-DSP` FFT 构建项
+  - 保留 `Core/App/Tasks/ModDetectTask.c` 构建项，仅作为空转任务壳
+
+### 重点备份
+- `Core/App/Tasks/ModDetectTask.c.bak_20260508_iqpreproc`（含快照队列 + IQ 预处理 + 调制识别旧主线）
+- `Core/App/Tasks/AdcTask.c.bak_20260508_demod_detach`（含主线脱开前后的关键过渡版本）
+- `Core/App/LVGL/app_lvgl_ui.c.bak_20260508_demod_detach`（单页 UI 收缩前后的过渡版本）
+- `CMakeLists.txt.bak_20260508_iqpreproc`（仍含 `app_mod_detect/app_iq_preproc/CMSIS-DSP` 构建挂载）
+- `文件改动记录.md.bak_20260508_demod_detach`
+- `方案改动记录.md.bak_20260508_demod_detach`
+
+### 说明
+- 本轮不删除 `app_mod_detect.c/.h` 与 `app_iq_preproc.c/.h` 文件本体，只将其彻底移出当前构建与运行主线。
+- 若后续需要恢复参数识别链，应优先从上述重点备份回溯，而不是从当前空转壳版本反推。
+
+## 2026-05-09 SI5351 wrapper 头文件补接
+
+### 当前现象
+- `Debug` 构建在 `Core/App/Tasks/SI5351.c` 失败
+- 报错集中为 `app_si5351_output_cfg_t`、`app_si5351_result_t`、`app_si5351_init_device()` 等 wrapper 类型和接口未声明
+
+### 已修改文件
+- `Core/App/Tasks/SI5351.c`
+  - 新增 `#include "../SI5351/Wrapper/app_si5351_drv.h"`
+  - 让任务层显式拿到 `app_si5351_*` 的类型、枚举和函数声明
+
+### 判断
+- 本次属于接口接线修复，不是功能逻辑修改
+- `Core/App/SI5351/Wrapper/app_si5351_drv.c` 已经在 `CMakeLists.txt` 中参与构建，问题只是在 `SI5351.c` 缺少对应头文件
+
+### 编译结果
+- 使用 `C:\Users\18152\AppData\Local\stm32cube\bundles\cmake\4.2.3+st.1\bin\cmake.exe --build D:/VSCodeCMAKEProject/Simple_wireless_IQ_demodulation/build/Debug --`
+- `Debug` 构建通过
+- `DTCMRAM: 75864 B / 128 KB (57.88%)`
+- `RAM: 0 B / 512 KB (0.00%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `RAM_D3: 0 B / 64 KB (0.00%)`
+- `ITCMRAM: 0 B / 64 KB (0.00%)`
+- `FLASH: 607064 B / 2 MB (28.95%)`
+
+## 2026-05-09 adc.c 乱码注释修复
+
+### 当前现象
+- `Core/Src/adc.c` 中保留了多处历史乱码中文注释，集中在 `USER CODE BEGIN 0/1` 的 ADC DMA 缓冲区与 ISR 注释区域。
+- 本次问题只影响源码可读性与后续编码一致性，不涉及运行逻辑错误。
+
+### 已修改文件
+- `Core/Src/adc.c`
+  - 将 `tim.h` 头文件后的乱码注释改为 UTF-8 正常中文
+  - 将 DMA 缓冲区说明、半块/全块状态变量说明、ISR 发布逻辑说明、半块/全块回调说明改为 UTF-8 正常中文
+  - 未改动任何 ADC/DMA/中断执行逻辑
+
+### 说明
+- 本次属于注释与编码清理，不是算法、时序或外设配置修改。
+- 未执行编译；若后续需要，可在下一步单独做只读构建验证。
+
+## 2026-05-09 app_iq_preproc ADC 基本假设修正
+
+### 当前现象
+- `Core/App/Signal/app_iq_preproc.h` 中仍保留旧的 ADC 假设：
+  - `APP_IQ_PREPROC_ADC_MAX_CODE = 65535U`
+  - `APP_IQ_PREPROC_CENTER_MV = 1600U`
+- 这与当前工程实际 `14-bit ADC`、默认中点约 `8192` 的数据范围不一致。
+
+### 已修改文件
+- `Core/App/Signal/app_iq_preproc.h`
+  - 将 `APP_IQ_PREPROC_ADC_MAX_CODE` 从 `65535U` 改为 `16383U`
+  - 将 `APP_IQ_PREPROC_CENTER_MV` 从 `1600U` 改为 `1650U`
+  - 同步修正默认中点注释说明为约 `8192`
+
+### 说明
+- 本次只修正 ADC 码值范围和默认中心假设，不修改残余频偏补偿算法流程。
+- 未执行编译；当前文件已不在主线构建中，后续若重新接回构建再单独做编译验证。
+
+## 2026-05-09 AdcTask IQ 预处理门控与复位修正
+
+### 当前现象
+- `Core/App/Tasks/AdcTask.c` 已开始调用 `app_iq_preproc_analyze_block_u16()`，但调用时机在 `app_signal_detect_process_block()` 之前。
+- 这会让 IQ 预处理把 coarse/fine scan、未锁定阶段的数据也计入残余频偏估计。
+- 同时失锁、重扫和重新进入锁定时，未对 `iq_preproc` 状态做复位，存在历史状态污染风险。
+
+### 已修改文件
+- `Core/App/Tasks/AdcTask.c`
+  - 新增 `iq_preproc_tracking_active` 运行状态标志
+  - 新增 `adc_iq_preproc_reset_tracking()`，统一复位 `iq_preproc` 上下文与结果
+  - 将 `app_iq_preproc_analyze_block_u16()` 挪到 `app_signal_detect_process_block()` 之后
+  - 仅在 `stage == APP_SIGDET_STAGE_VPP_LOCKED && locked && carrier_present` 时才运行 IQ 预处理分析
+  - 在失锁/重扫退出锁定态时复位 IQ 预处理状态
+  - 在重新进入锁定态时重新开始新的分析窗口
+  - `adc_log_iq_preproc_1s()` 仅在 tracking 激活时输出，避免打印旧结果
+
+### 说明
+- 本次只修正 IQ 预处理分析的门控与复位逻辑，不修改 `app_iq_preproc` 核心估计算法。
+
+### 编译结果
+- 使用 `C:\Users\18152\AppData\Local\stm32cube\bundles\cmake\4.2.3+st.1\bin\cmake.exe --build D:/VSCodeCMAKEProject/Simple_wireless_IQ_demodulation/build/Debug --`
+- `Debug` 构建通过
+- `DTCMRAM: 75928 B / 128 KB (57.93%)`
+- `RAM: 0 B / 512 KB (0.00%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `RAM_D3: 0 B / 64 KB (0.00%)`
+- `ITCMRAM: 0 B / 64 KB (0.00%)`
+- `FLASH: 610252 B / 2 MB (29.10%)`
+
+## 2026-05-09 app_iq_preproc 实时性观测计数器
+
+### 当前需求
+- 需要像 `adc_overrun_cnt` 一样，在变量查看器里直接观察 `app_iq_preproc` 的处理节拍。
+- 需求要求：
+  - 分析模式与处理模式分别统计
+  - 不打印串口日志
+  - 不同模式只增加对应变量
+
+### 已修改文件
+- `Core/App/Signal/app_iq_preproc.h`
+  - 新增 4 个 `extern volatile` 计数器声明
+- `Core/App/Signal/app_iq_preproc.c`
+  - 新增 4 个全局 `volatile` 计数器定义
+  - 分析模式成功处理一个 block 后增加：
+    - `app_iq_preproc_analyze_block_cnt`
+    - `app_iq_preproc_analyze_sample_cnt`
+  - 处理/旋转模式成功处理一个 block 后增加：
+    - `app_iq_preproc_rotate_block_cnt`
+    - `app_iq_preproc_rotate_sample_cnt`
+
+### 说明
+- 本次只增加调试观测计数器，不修改残余频偏估计算法和门控逻辑。
+
+## 2026-05-11 扫频独立与 OCXO VRFE 慢速闭环接入
+
+### 当前需求
+- 将扫频功能从主检测文件中独立出来，便于后续维护。
+- 让 `AdcTask.c` 只负责 ADC DMA 块领取和同步分发。
+- 新增 OCXO VRFE 慢速闭环控制模块，通过 DAC1 输出调节电压。
+
+### 已修改文件
+- `Core/App/Signal/Sweep/app_signal_sweep.h`
+  - 新增扫频模块公开接口。
+- `Core/App/Signal/Sweep/app_signal_sweep.c`
+  - 新增粗扫、细扫、Vpp 统计、边界/谷值估计、半步修正、DDS LO 写入请求逻辑。
+  - 保留原有 `sigdet_final` / `sigdet_edge` 日志语义。
+- `Core/App/Signal/Carrier/app_carrier_sync.h`
+  - 新增 OCXO VRFE 闭环状态与控制接口。
+- `Core/App/Signal/Carrier/app_carrier_sync.c`
+  - 新增 DAC1 输出初始化、mV 到 12-bit DAC code 换算、1.55V 中心点、限幅和慢速积分调节。
+  - 默认 VRFE 范围为 `1400mV ~ 1700mV`，默认中心为 `1550mV`。
+  - 默认每秒最多按残余频偏方向调整 `1mV`。
+- `Core/App/Signal/app_signal_detect.h`
+  - 新增 `app_signal_pipeline_process_block()`，作为 ADC 块进入 Signal 层的统一入口。
+- `Core/App/Signal/app_signal_detect.c`
+  - 新增 Signal 门面层：初始化扫频、OCXO VRFE、IQ 预处理。
+  - 新增锁定门控：只有 `APP_SIGDET_STAGE_VPP_LOCKED && locked && carrier_present` 后才运行 IQ 预处理和 VRFE 闭环。
+  - 保留旧实现于 `#if 0` 块内作为迁移参考，当前不参与编译。
+- `Core/App/Tasks/AdcTask.c`
+  - 移出 IQ 预处理状态、验证 helper、锁定门控判断。
+  - 每个 ADC block 仅调用 `app_signal_pipeline_process_block()` 进行同步分发。
+- `CMakeLists.txt`
+  - 新增 `Core/App/Signal/Sweep/app_signal_sweep.c`
+  - 新增 `Core/App/Signal/Carrier/app_carrier_sync.c`
+  - 新增 `Core/App/Signal/Sweep` 与 `Core/App/Signal/Carrier` include path。
+
+### 说明
+- 未修改 `Core/Src/dac.c`、`Core/Src/tim.c`、`.ioc` 等 CubeMX 生成配置。
+- 没有删除任何文件或目录。
+- 新增代码注释使用 UTF-8 中文。
+
+### 编译结果
+- 使用 `C:\Users\18152\AppData\Local\stm32cube\bundles\cmake\4.2.3+st.1\bin\cmake.exe --build D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\build\Debug --`
+- `Debug` 构建通过
+- `DTCMRAM: 76040 B / 128 KB (58.01%)`
+- `RAM: 0 B / 512 KB (0.00%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `RAM_D3: 0 B / 64 KB (0.00%)`
+- `ITCMRAM: 0 B / 64 KB (0.00%)`
+- `FLASH: 617572 B / 2 MB (29.45%)`
+
+## 2026-05-11 新拆分 Signal 模块 UTF-8 中文注释补充
+
+### 当前需求
+- 参考 `D:\Downloads\comment_cleaned_sources_bundle` 中之前清理过的中文注释风格。
+- 给本轮新拆分出来的当前活动代码补充必要中文注释。
+- 保证新增注释为 UTF-8 中文，不改算法和外设配置。
+
+### 已修改文件
+- `Core/App/Signal/Sweep/app_signal_sweep.h`
+  - 补充扫频模块职责、设计边界和公开接口说明。
+- `Core/App/Signal/Sweep/app_signal_sweep.c`
+  - 补充 Vpp 统计结构、扫频结果结构、扫频上下文、DDS LO 设置、粗扫/细扫切换、频点统计、锁定完成和公开入口注释。
+- `Core/App/Signal/Carrier/app_carrier_sync.h`
+  - 补充 OCXO VRFE 闭环状态字段说明和公开接口说明。
+- `Core/App/Signal/Carrier/app_carrier_sync.c`
+  - 补充 1.55V 中心点、限幅、更新周期、死区、步进、极性、DAC code 换算、DAC 启动和闭环更新注释。
+- `Core/App/Signal/app_signal_detect.h`
+  - 补充 Signal 门面层初始化、重扫、统一 block 入口、兼容接口和状态读取说明。
+- `Core/App/Signal/app_signal_detect.c`
+  - 补充 IQ 预处理上下文、相位包装、边缘相位计算、虚拟反旋转、验证快照、跟踪复位、pipeline 入口和旧实现迁移参考块说明。
+
+### 说明
+- 本次只补充/修正注释，不修改运行逻辑。
+- 未修改 `Core/Src/dac.c`、`Core/Src/tim.c`、`.ioc` 等 CubeMX 生成配置。
+- 未删除任何文件或目录。
+- 已检查当前活动文件中常见乱码注释特征，未发现 `缁/鎵/閿/銆/锛/�` 等 mojibake 残留。
+
+### 编译结果
+- 使用 `C:\Users\18152\AppData\Local\stm32cube\bundles\cmake\4.2.3+st.1\bin\cmake.exe --build D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\build\Debug --`
+- `Debug` 构建通过
+- `DTCMRAM: 76040 B / 128 KB (58.01%)`
+- `FLASH: 617572 B / 2 MB (29.45%)`
+
+## 2026-05-12 OCXO VRFE 闭环控制单位改为 uV
+
+### 当前需求
+- 原闭环步进使用整数 mV，不能安全表达 `0.1mV` 这类小数步进。
+- 用户要求将闭环控制单位改为 `uV`，便于设置更细的 VRFE 调整步进。
+
+### 已修改文件
+- `Core/App/Signal/Carrier/app_carrier_sync.h`
+  - 将状态字段 `control_mv` 改为 `control_uv`
+  - 同步注释为 `uV` 单位
+- `Core/App/Signal/Carrier/app_carrier_sync.c`
+  - 将 `APP_CARRIER_SYNC_CENTER_MV` 改为 `APP_CARRIER_SYNC_CENTER_UV`
+  - 将 `APP_CARRIER_SYNC_MIN_MV` / `MAX_MV` 改为 `MIN_UV` / `MAX_UV`
+  - 将 `APP_CARRIER_SYNC_STEP_MV` 改为 `APP_CARRIER_SYNC_STEP_UV`
+  - 当前默认值：
+    - `APP_CARRIER_SYNC_CENTER_UV = 1590000`
+    - `APP_CARRIER_SYNC_MIN_UV = 1400000`
+    - `APP_CARRIER_SYNC_MAX_UV = 1700000`
+    - `APP_CARRIER_SYNC_STEP_UV = 100`
+  - DAC code 换算改为按 `3300000uV` 参考计算，并使用 `uint64_t` 避免乘法溢出
+
+### 说明
+- `APP_CARRIER_SYNC_STEP_UV = 100` 等效 `0.1mV`
+- 本次只改 OCXO VRFE 闭环单位和换算，不改扫频、ADC、DAC/TIM CubeMX 生成配置。
+
+### 编译结果
+- 使用 `C:\Users\18152\AppData\Local\stm32cube\bundles\cmake\4.2.3+st.1\bin\cmake.exe --build D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\build\Debug --`
+- `Debug` 构建通过
+- `DTCMRAM: 76040 B / 128 KB (58.01%)`
+- `FLASH: 617620 B / 2 MB (29.45%)`
+
+## 2026-05-12 锁定后自动切换到 x 轴绝对相位旋转模式
+
+### 当前需求
+- 用户当前 VRFE 闭环参数实测效果已经较好，不再调整闭环参数。
+- 需要在扫频锁定后自动进入绝对相位锁定模式，把 IQ 平均相位压到 x 轴，便于后续按 x 轴判决。
+- 明确 `iq_rot` 日志中的 `rd/cd` 是否作为锁定依据。
+
+### 已修改文件
+- `Core/App/Signal/app_signal_detect.c`
+  - 将 `ADC_IQ_PREPROC_ROTATE_RUNTIME_ENABLE` 默认打开为 `1U`。
+  - 保持原有锁定门控：只有 `APP_SIGDET_STAGE_VPP_LOCKED && locked && carrier_present` 后才进入 IQ 旋转处理。
+- `Core/App/Signal/app_iq_preproc.h`
+  - 新增 `APP_IQ_PREPROC_ABS_PHASE_LOCK_X`，默认 `1U`。
+  - 该宏控制旋转输出是否把当前 block 的平均 IQ 相位对齐到 `+I` 轴。
+- `Core/App/Signal/app_iq_preproc.c`
+  - 新增 `calc_x_axis_lock_phase0()`，用当前 block 平均相位作为绝对相位锚点，并结合残余频偏反推出 block 首点旋转相位。
+  - 在旋转输出模式下使用 x 轴锁定相位；非旋转分析模式仍保留原来的相位累加逻辑。
+  - 用编译条件包住透传 helper，清除旋转宏打开后的未使用函数 warning。
+
+### 说明
+- `iq_rot` 日志里的 `rd` 是原始 block 头尾相位差，`cd` 是补偿/旋转后的头尾相位差；它们当前是验证量，不是扫频锁定依据。
+- 本次不修改 `app_carrier_sync` 中当前已调好的 VRFE 参数。
+- 未修改 CubeMX 生成文件，未删除任何文件或目录。
+
+### 编译结果
+- 使用 `C:\Users\18152\AppData\Local\stm32cube\bundles\cmake\4.2.3+st.1\bin\cmake.exe --build D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\build\Debug --`
+- `Debug` 构建通过，无新增 warning/error
+- `DTCMRAM: 92424 B / 128 KB (70.51%)`
+- `FLASH: 617924 B / 2 MB (29.46%)`
+
+### 后续 уточ正
+- 用户明确要求进入相位模式后锁定在 x 轴，即输出平均向量满足 `tan = Q / I = 0`。
+- `Core/App/Signal/app_iq_preproc.c`
+  - 将 `calc_x_axis_lock_phase0()` 从“按 block 中心相位估算”改为“先按残余频偏对整个 block 做虚拟旋转并求和，再取合向量相位作为校正角”。
+  - 这样最终旋转输出的 block 平均 Q 分量被显式压向 0，而不是只让头尾相位差 `cd` 变小。
+- `Core/App/Signal/app_iq_preproc.h`
+  - 补充 `APP_IQ_PREPROC_ABS_PHASE_LOCK_X` 的中文说明：锁定后旋转输出压到 `+I` 轴，使平均 `Q/I` 正切值趋近 0。
+- 复编 `Debug` 通过：
+  - `DTCMRAM: 92424 B / 128 KB (70.51%)`
+  - `FLASH: 618204 B / 2 MB (29.48%)`
+
+### 再次纠正
+- 用户进一步明确：不是用 `rd/cd` 或残余频偏补偿合向量决定相位，而是对 I/Q 两路去中心后的幅度直接求反正切，得到 `phase = atan2(Q, I)`，再把该相位旋到 0。
+- `Core/App/Signal/app_iq_preproc.c`
+  - `calc_x_axis_lock_phase0()` 改为只使用当前 block 的 `mean.i` 和 `mean.q` 计算 `atan2(Q, I)`。
+  - x 轴绝对相位锁定模式下，旋转输出不再叠加 `residual_rad_per_sample` 的逐点递推，避免把载波残余频偏补偿混进“相位为零”目标。
+- `Core/App/Signal/app_iq_preproc.h`
+  - 明确 `APP_IQ_PREPROC_ABS_PHASE_LOCK_X` 含义为按 `atan2(Q, I)` 求相位并旋到 `+I` 轴，使平均 `Q/I` 正切值趋近 0。
+- 复编 `Debug` 通过：
+  - `DTCMRAM: 92424 B / 128 KB (70.51%)`
+  - `FLASH: 617828 B / 2 MB (29.46%)`
+
+### 示波器锁定点复位随机修正
+- 现象：用户在示波器上观察到每次复位后的锁定点不一致。
+- 判断：软件 IQ 旋转只作用于内部 `iq_preproc_i_buf/q_buf`，不会改变示波器上看到的原始模拟相位；若要让硬件点位也靠近 x 轴，需要在 DDS 相位侧做一次补偿。
+- `Core/App/Signal/app_iq_preproc.h`
+  - 在 `app_iq_preproc_result_t` 中新增 `x_axis_phase_rad` 和 `x_axis_phase_valid`，保存 `atan2(Q, I)` 得到的实时相位误差。
+- `Core/App/Signal/app_iq_preproc.c`
+  - 在 `fill_result()` 中同步输出 `x_axis_phase_rad`，供 Signal 层做硬件相位补偿。
+- `Core/App/Signal/app_signal_detect.c`
+  - 新增 `APP_SIGNAL_PHASE_ALIGN_DDS_ENABLE`，默认启用锁定后 DDS 相位补偿。
+  - 新增 `APP_SIGNAL_PHASE_ALIGN_SETTLE_BLOCKS`，默认锁定后等待 8 个 block 再补偿，避开刚锁定瞬态。
+  - 新增 `APP_SIGNAL_PHASE_ALIGN_POLARITY`，若实测补偿方向反了，只改该宏为 `-1`。
+  - 新增 `app_signal_try_align_dds_phase()`，本轮锁定后只执行一次：选中 `APP_SIGDET_DDS_CHANNEL`，写入相位角，再 `Apply`。
+- 复编 `Debug` 通过：
+  - `DTCMRAM: 92432 B / 128 KB (70.52%)`
+  - `FLASH: 618420 B / 2 MB (29.49%)`
+
+### DDS 相位补偿撤销
+- 用户明确指出：当前目标是 IQ 两路在矢量图上锁定到 x 轴，不应操作 DDS 相位寄存器。
+- 纠正判断：上一版把“示波器上的模拟相位固定”和“软件矢量图中 IQ 点旋到 x 轴”混在了一起；对于软件矢量图锁定，只需要 IQ 旋转，不需要改 DDS 相位。
+- `Core/App/Signal/app_signal_detect.c`
+  - 移除活动代码中的 `app_dds_ctrl.h` include。
+  - 移除 `APP_SIGNAL_PHASE_ALIGN_DDS_ENABLE`、`APP_SIGNAL_PHASE_ALIGN_SETTLE_BLOCKS`、`APP_SIGNAL_PHASE_ALIGN_POLARITY`。
+  - 移除锁定后一次性 DDS 相位写入函数和调用。
+- 保留 `Core/App/Signal/app_iq_preproc.h` 中的 `x_axis_phase_rad/x_axis_phase_valid`，用于调试观察 `atan2(Q, I)` 实时相位。
+- 构建验证：再次运行 CMake build，Ninja 返回 `no work to do`；源码检查确认活动代码中无 DDS 相位补偿残留。
+
+## 2026-05-12 OCXO VRFE 闭环改为相位闭环
+
+### 当前需求
+- 用户明确要求将 VRFE 闭环从频率闭环改为相位闭环。
+- 目标不再只是让残余频偏趋近 0，而是用 `atan2(Q, I)` 得到的相位误差推动 OCXO VRFE，使 IQ 矢量图逐步锁到 x 轴。
+
+### 已修改文件
+- `Core/App/Signal/Carrier/app_carrier_sync.h`
+  - 在 `app_carrier_sync_status_t` 中新增 `phase_error_urad`，用于调试观察相位闭环误差。
+- `Core/App/Signal/Carrier/app_carrier_sync.c`
+  - `app_carrier_sync_update()` 的控制量由 `residual_freq_millihz` 改为 `iq_result->x_axis_phase_rad`。
+  - `residual_freq_millihz` 继续保留为观测量，不再作为 VRFE 调节依据。
+  - 新增相位环参数：
+    - `APP_CARRIER_SYNC_PHASE_UPDATE_PERIOD_MS = 20U`
+    - `APP_CARRIER_SYNC_PHASE_DEADBAND_URAD = 5000`
+    - `APP_CARRIER_SYNC_PHASE_POLARITY = 1`
+  - 当前相位环每 20ms 最多调整一次 VRFE，每次调整 `APP_CARRIER_SYNC_STEP_UV = 50uV`。
+- `Core/App/LOG/app_adc_log.c`
+  - `iq_pre` 日志新增 `xp_urad` 和 `xv`。
+  - `xp_urad` 是 `atan2(Q, I)` 得到的相位误差，目标为 0。
+  - `xv` 表示该相位误差是否有效。
+
+### 编译结果
+- 使用 `C:\Users\18152\AppData\Local\stm32cube\bundles\cmake\4.2.3+st.1\bin\cmake.exe --build D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\build\Debug --`
+- `Debug` 构建通过，无新增 warning/error
+- `DTCMRAM: 92440 B / 128 KB (70.53%)`
+- `FLASH: 618092 B / 2 MB (29.47%)`
+
+### 上板观察要点
+- 先看 `iq_pre` 中的 `xp_urad` 是否整体向 0 收敛。
+- 若 `xp_urad` 越调越大或稳定跑向反方向，优先只把 `APP_CARRIER_SYNC_PHASE_POLARITY` 改为 `-1`。
+- 经验仅供参考，不视为绝对结论。
+
+## 2026-05-12 回退到不加相位锁定版本
+
+### 本次回退范围
+- `Core/App/Signal/app_signal_detect.c`
+  - 将 `ADC_IQ_PREPROC_ROTATE_RUNTIME_ENABLE` 恢复为 `0U`。
+  - 锁定后只运行 IQ 频偏分析，不自动切入运行时 IQ 旋转输出路径。
+- `Core/App/Signal/app_iq_preproc.h`
+  - 移除 `APP_IQ_PREPROC_ABS_PHASE_LOCK_X` 绝对相位锁定开关。
+  - 移除 `app_iq_preproc_result_t` 中的 `x_axis_phase_rad` 和 `x_axis_phase_valid`。
+- `Core/App/Signal/app_iq_preproc.c`
+  - 移除按 `atan2(Q, I)` 把 IQ 平均向量压到 x 轴的相位锁定路径。
+  - 保留原有残余频偏估计和连续相位累加逻辑，供 VRFE 频率闭环使用。
+- `Core/App/Signal/Carrier/app_carrier_sync.h`
+  - 移除 `phase_error_urad` 状态字段。
+- `Core/App/Signal/Carrier/app_carrier_sync.c`
+  - `app_carrier_sync_update()` 控制量恢复为 `iq_result->residual_freq_millihz`。
+  - 移除相位环参数 `APP_CARRIER_SYNC_PHASE_UPDATE_PERIOD_MS`、`APP_CARRIER_SYNC_PHASE_DEADBAND_URAD`、`APP_CARRIER_SYNC_PHASE_POLARITY`。
+  - 当前 VRFE 仍按 `APP_CARRIER_SYNC_STEP_UV` 做 uV 步进，调节方向由 `APP_CARRIER_SYNC_CONTROL_POLARITY` 决定。
+- `Core/App/LOG/app_adc_log.c`
+  - `iq_pre` 日志恢复为 `mi/mq/mag/fo_mhz/ph_urad/blk`。
+  - 移除 `xp_urad` 和 `xv` 输出。
+
+### 编译结果
+- 使用 `C:\Users\18152\AppData\Local\stm32cube\bundles\cmake\4.2.3+st.1\bin\cmake.exe --build D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\build\Debug --`
+- `Debug` 构建通过，无新增 warning/error。
+- `DTCMRAM: 76040 B / 128 KB (58.01%)`
+- `FLASH: 617620 B / 2 MB (29.45%)`
+
+### 当前行为说明
+- 本次没有修改 CubeMX 生成配置。
+- 当前不操作 DDS 相位寄存器。
+- 当前不再通过软件相位锁定把 IQ 矢量固定到 x 轴；复位后的绝对相位如果仍有随机性，属于未启用相位锁定时的预期现象。
+
+## 2026-05-12 频率稳定后相位归零闭环实现
+
+### 本次备份
+- 已备份本轮会修改的算法/任务文件，后缀统一为 `.bak_20260512_phasealign`。
+- 备份范围包括 `app_signal_detect.c`、`app_carrier_sync.c/.h`、`ModDetectTask.c/.h`、`app_mod_detect.h` 和 `CMakeLists.txt`。
+
+### 已修改文件
+- `Core/App/Signal/Carrier/app_phase_align.c/.h`
+  - 新增频率稳定后相位归零状态机：`IDLE / FREQ_STABLE_WAIT / MOD_PRECHECK / PHASE_ALIGN / PHASE_HOLD / MOD_RECHECK`。
+  - 相位目标定义为 `atan2(Q, I) = 0`，即 IQ 重心落在 `+I` 轴。
+  - 3 秒稳定窗口使用相位 RMS 判据，默认 `30° = 523599 urad`。
+  - CW/AM/ASK 用幅度门控后的重心；FM/FSK/PSK 提高重心幅度要求，不可靠时冻结相位环。
+- `Core/App/Signal/Carrier/app_carrier_sync.c/.h`
+  - 保留原 `residual_freq_millihz` 频率闭环。
+  - 新增 `app_carrier_sync_update_phase()`，在当前 VRFE 电压基础上按相位误差微调 DAC。
+  - 新增 `phase_error_urad` 状态字段，便于调试观察相位环输入。
+- `Core/App/Tasks/ModDetectTask.c/.h`
+  - 补齐原空壳任务，改为双槽拷贝缓冲 + RTOS 队列异步处理。
+  - `AdcTask` 不直接运行调制识别 FFT/统计，避免阻塞 2 ms ADC block 节拍。
+  - 新增任务统计字段 `last_process_tick_ms` 和 `moddetect_task_reset()`。
+- `Core/App/Signal/app_mod_detect.h`
+  - 恢复调制识别真实公共接口，补齐 `CW/AM/ASK/FM/FSK/PSK` 枚举、状态字段和参数宏。
+- `Core/App/Signal/app_mod_detect.c`
+  - 新增 `APP_MODDET_USE_CMSIS_FFT`，默认 `0U`，避免当前工程未链接 CMSIS-DSP CFFT 库时出现链接错误。
+  - 默认保留时域包络/相位统计分类路径，FFT 谱特征后续确认 DSP 库链接后再打开。
+- `Core/App/Signal/app_signal_detect.c`
+  - Signal pipeline 改为：扫频更新 -> IQ 频偏分析 -> 低频提交调制识别 -> 相位状态机更新 -> 频率环或相位环二选一更新 VRFE。
+  - 锁定后每 `100 ms` 提交一次调制识别 block。
+  - 失锁时清空相位归零和调制识别状态。
+- `CMakeLists.txt`
+  - 加入 `app_phase_align.c` 和 `app_mod_detect.c`。
+  - 增加 `Core/App/Tasks` include path。
+
+### 编译结果
+- `Debug` 构建通过。
+- `DTCMRAM: 76232 B / 128 KB (58.16%)`
+- `RAM: 174144 B / 512 KB (33.22%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 629892 B / 2 MB (30.04%)`
+
+### 注意事项
+- 本次未修改 CubeMX 生成区。
+- 相位环不是强制所有 block 调 VRFE；所有调制类型都会进入相位模块，但重心不可靠或识别置信度不足时冻结。
+- `APP_MODDET_USE_CMSIS_FFT` 当前默认关闭；若后续要启用频谱特征，需要先补齐 CMSIS-DSP 库链接。
+
+## 2026-05-12 相位接管前频稳判据修正
+
+### 触发现象
+- 调试器观察到 `g_phase_align.status.stage = 1`，`centroid_valid = 1`，`stable_confidence_percent = 100`，但 `vrfe_phase_takeover = 0`。
+- 示波器上 IQ 相位波动已小于十几度，但变量中 `phase_rms_urad` 仍大于 `523599 urad`。
+
+### 已验证原因
+- 原实现把 `phase_error_urad` 相对 `0°` 的绝对误差直接纳入 3 秒 RMS。
+- 当当前锁定点稳定在 `80°~110°` 一类固定相位偏置时，示波器看到的是“波动小”，但代码看到的是“离 0° 远”，因此会反复重置稳定窗口并卡在 `FREQ_STABLE_WAIT`。
+
+### 修改内容
+- 修改 `Core/App/Signal/Carrier/app_phase_align.c/.h`。
+- 新增 `stable_ref_phase_urad` 和 `stable_ref_valid`，用稳定窗口第一个有效重心相位作为参考点。
+- `phase_rms_urad` 改为统计“相对窗口起点的相位波动 RMS”，不再统计“离 0° 的绝对相位 RMS”。
+- `phase_error_urad` 保持原含义，仍表示 `atan2(Q, I)` 相对 `0°` 的误差，进入相位接管后继续用于把相位拉回 `+I` 轴。
+
+### 备份与编译
+- 已备份：
+  - `Core/App/Signal/Carrier/app_phase_align.c.bak_20260512_stable_rms`
+  - `Core/App/Signal/Carrier/app_phase_align.h.bak_20260512_stable_rms`
+- `Debug` 构建通过。
+- `DTCMRAM: 76240 B / 128 KB (58.17%)`
+- `RAM: 174144 B / 512 KB (33.22%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 630020 B / 2 MB (30.04%)`
+
+## 2026-05-12 回退到无相位闭环版本
+
+### 用户请求
+- 用户要求版本回退到没有相位闭环的版本。
+
+### 回退方式
+- 未删除任何文件或目录。
+- 先备份当前相位闭环版本，再用 `*.bak_20260512_phasealign` 恢复相位闭环落地前的关键文件。
+
+### 当前版本备份
+- `Core/App/Signal/app_signal_detect.c.bak_20260512_before_no_phase_rollback`
+- `Core/App/Signal/Carrier/app_carrier_sync.c.bak_20260512_before_no_phase_rollback`
+- `Core/App/Signal/Carrier/app_carrier_sync.h.bak_20260512_before_no_phase_rollback`
+- `Core/App/Tasks/ModDetectTask.c.bak_20260512_before_no_phase_rollback`
+- `Core/App/Tasks/ModDetectTask.h.bak_20260512_before_no_phase_rollback`
+- `Core/App/Signal/app_mod_detect.h.bak_20260512_before_no_phase_rollback`
+- `Core/App/Signal/Carrier/app_phase_align.c.bak_20260512_before_no_phase_rollback`
+- `Core/App/Signal/Carrier/app_phase_align.h.bak_20260512_before_no_phase_rollback`
+- `CMakeLists.txt.bak_20260512_before_no_phase_rollback`
+
+### 已恢复文件
+- `Core/App/Signal/app_signal_detect.c`
+  - 主流程恢复为扫频锁定后只做 IQ 预处理和频率闭环。
+  - 不再调用 `app_phase_align_update()`、`app_carrier_sync_update_phase()` 或调制识别接管逻辑。
+- `Core/App/Signal/Carrier/app_carrier_sync.c/.h`
+  - 恢复为仅按 `residual_freq_millihz` 调 VRFE 的频率闭环版本。
+- `Core/App/Tasks/ModDetectTask.c/.h`
+  - 恢复到相位闭环落地前版本。
+- `Core/App/Signal/app_mod_detect.h`
+  - 恢复到相位闭环落地前版本。
+- `CMakeLists.txt`
+  - 构建中不再加入 `app_phase_align.c` 和 `app_mod_detect.c`。
+
+### 编译验证
+- `Debug` 构建通过。
+- `DTCMRAM: 76040 B / 128 KB (58.01%)`
+- `RAM: 0 B / 512 KB (0.00%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 617620 B / 2 MB (29.45%)`
+
+### 注意事项
+- `Core/App/Signal/Carrier/app_phase_align.c/.h` 文件仍保留在目录中，但当前 `CMakeLists.txt` 不编译它们，主流程也不调用它们。
+- 当前版本不再尝试把 IQ 相位锁到 `0°`，只保留 OCXO VRFE 的频率闭环。
+
+## 2026-05-12 频率闭环更新周期与积分斜率拆分
+
+### 触发原因
+- 用户指出 `APP_CARRIER_SYNC_UPDATE_PERIOD_MS` 同时表示最小调节间隔又影响积分速度，控制含义不清晰。
+
+### 修改文件
+- `Core/App/Signal/Carrier/app_carrier_sync.c`
+
+### 修改内容
+- 新增 `APP_CARRIER_SYNC_FREQ_UPDATE_PERIOD_MS`：
+  - 含义：频率闭环执行节拍，单位 ms。
+  - 默认值：`20U`。
+  - 只决定多久计算一次控制输出。
+- 新增 `APP_CARRIER_SYNC_FREQ_SLEW_UV_PER_SEC`：
+  - 含义：频率闭环最大积分斜率，单位 uV/s。
+  - 默认值：`5000L`，即最大约 `5 mV/s`。
+  - 决定 VRFE 控制电压变化速度。
+- 保留旧宏 `APP_CARRIER_SYNC_STEP_UV` 作为兼容入口：
+  - 若外部仍定义旧宏，则映射为 `APP_CARRIER_SYNC_FREQ_SLEW_UV_PER_SEC = APP_CARRIER_SYNC_STEP_UV * 1000`。
+- 新增 `app_carrier_sync_calc_freq_step_uv()`：
+  - 按实际经过时间 `elapsed_ms` 把 uV/s 斜率换算为本次积分步进。
+- 增加锁定边沿保护：
+  - 刚从未锁定进入锁定时只同步 `last_update_tick`，不立刻积分。
+  - 避免扫频耗时被误算为第一次频率闭环的超大 `dt`。
+
+### 备份与编译
+- 已备份：`Core/App/Signal/Carrier/app_carrier_sync.c.bak_20260512_freq_rate_split`
+- `Debug` 构建通过。
+- `DTCMRAM: 76040 B / 128 KB (58.01%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 617836 B / 2 MB (29.46%)`
+
+## 2026-05-12 频率闭环改为 PI 控制
+
+### 触发原因
+- 用户要求把当前符号限速积分闭环改成 PI。
+
+### 修改文件
+- `Core/App/Signal/Carrier/app_carrier_sync.c`
+- `Core/App/Signal/Carrier/app_carrier_sync.h`
+
+### 修改内容
+- 新增 PI 参数：
+  - `APP_CARRIER_SYNC_FREQ_KP_UV_PER_HZ`：P 增益，单位 `uV/Hz`，默认 `10L`。
+  - `APP_CARRIER_SYNC_FREQ_KI_UV_PER_HZ_S`：I 增益，单位 `uV/(Hz*s)`，默认 `500L`。
+- 保留 `APP_CARRIER_SYNC_FREQ_SLEW_UV_PER_SEC`：
+  - 含义改为 PI 输出限速，防止目标电压突变直接拉动 OCXO。
+- 新增状态字段：
+  - `p_term_uv`：P 项输出。
+  - `i_term_uv`：I 项输出。
+  - `target_uv`：PI 计算出的目标 VRFE 电压。
+- 新增内部状态：
+  - `integral_uv_q16`：Q16 定点积分项，避免低频偏、小 dt 时整数截断。
+- 新增内部函数：
+  - `app_carrier_sync_calc_pi_target_uv()`：按残余频偏和 dt 计算 PI 目标电压。
+  - `app_carrier_sync_slew_to_target_uv()`：对 PI 目标执行输出限速。
+  - `app_carrier_sync_clamp_integral()`：积分项限幅，避免长期饱和后恢复过慢。
+
+### 当前控制关系
+- `p_term_uv = polarity * residual_freq_millihz * KP / 1000`
+- `i_term_uv += polarity * residual_freq_millihz * KI * elapsed_ms / 1000000`
+- `target_uv = center_uv + p_term_uv + i_term_uv`
+- `control_uv` 按 `APP_CARRIER_SYNC_FREQ_SLEW_UV_PER_SEC` 限速逼近 `target_uv`
+
+### 备份与编译
+- 已备份：
+  - `Core/App/Signal/Carrier/app_carrier_sync.c.bak_20260512_pi`
+  - `Core/App/Signal/Carrier/app_carrier_sync.h.bak_20260512_pi`
+- `Debug` 构建通过。
+- `DTCMRAM: 76064 B / 128 KB (58.03%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 618540 B / 2 MB (29.49%)`
+
+## 2026-05-12 回退到用户实测较好的 VRFE 闭环参数版本
+
+### 触发原因
+- 用户说明需要回到“之前说过相关很好了”的版本。
+- 工程记录定位到该版本为 `2026-05-12 OCXO VRFE 闭环控制单位改为 uV` 后、相位闭环前的 VRFE 频率闭环参数版本。
+
+### 回退内容
+- 恢复 `Core/App/Signal/Carrier/app_carrier_sync.c/.h` 到相位闭环落地前的频率闭环结构。
+- 移除当前活动代码中的 PI 参数与 PI 状态字段：
+  - `APP_CARRIER_SYNC_FREQ_KP_UV_PER_HZ`
+  - `APP_CARRIER_SYNC_FREQ_KI_UV_PER_HZ_S`
+  - `p_term_uv / i_term_uv / target_uv`
+- 保留并恢复用户实测较好的参数语义：
+  - `APP_CARRIER_SYNC_CENTER_UV = 1590000`
+  - `APP_CARRIER_SYNC_MIN_UV = 1400000`
+  - `APP_CARRIER_SYNC_MAX_UV = 1700000`
+  - `APP_CARRIER_SYNC_UPDATE_PERIOD_MS = 0U`
+  - `APP_CARRIER_SYNC_DEADBAND_MHZ = 0`
+  - `APP_CARRIER_SYNC_STEP_UV = 100`
+  - `APP_CARRIER_SYNC_CONTROL_POLARITY = 1`
+
+### 当前控制方式
+- 当前不是 PI，也不是相位闭环。
+- 当前是锁定后根据 `residual_freq_millihz` 正负号，每次合格调用按 `100uV` 步进调整 VRFE。
+- 该版本对应用户此前反馈“VRFE 闭环参数实测效果已经较好”的版本。
+
+### 编译验证
+- `Debug` 构建通过。
+- `DTCMRAM: 76040 B / 128 KB (58.01%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 617620 B / 2 MB (29.45%)`
+
+## 2026-05-12 锁定后新增 IQ 幅度与相位串口观测日志
+
+### 触发原因
+- 用户要求频率锁定后，每秒通过串口输出 I/Q 两路幅度，以及由两路 I/Q 求得的相位。
+
+### 修改文件
+- `Core/App/LOG/app_adc_log.c`
+- `Core/App/LOG/app_adc_log.h`
+- `Core/App/Signal/app_signal_detect.c`
+
+### 修改内容
+- 新增 `app_adc_log_iq_amp_phase_1s()`：
+  - 只在 `tracking_active != 0` 且串口为 `UART_MODE_LOG` 时输出。
+  - 输出周期为 `APP_ADC_IQ_AMP_PHASE_LOG_MS = 1000U`。
+  - I/Q 幅度取去中心后重心分量的绝对值：`abs(mean_i)`、`abs(mean_q)`。
+  - 相位按 `atan2(Q, I)` 计算，同时输出 `ph_urad` 和 `ph_mdeg`。
+- 在 `app_signal_iq_preproc_process_block()` 锁定后 IQ 分析成功路径中调用该日志函数。
+- 不修改 VRFE 闭环算法，不修改扫频状态机，不修改 CubeMX 生成区。
+
+### 新增串口行
+- `iq_amp,i_amp=...,q_amp=...,i_mean=...,q_mean=...,mag=...,ph_urad=...,ph_mdeg=...,blk=...`
+
+### 备份与编译
+- 已备份：
+  - `Core/App/LOG/app_adc_log.c.bak_20260512_iq_amp_phase_log`
+  - `Core/App/LOG/app_adc_log.h.bak_20260512_iq_amp_phase_log`
+  - `Core/App/Signal/app_signal_detect.c.bak_20260512_iq_amp_phase_log`
+  - `文件改动记录/文件改动记录.md.bak_20260512_iq_amp_phase_log`
+  - `方案与方案改动记录/方案改动记录.md.bak_20260512_iq_amp_phase_log`
+- `Debug` 构建通过。
+- `DTCMRAM: 76040 B / 128 KB (58.01%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 618036 B / 2 MB (29.47%)`
+
+## 2026-05-12 串口日志输出类型统计记录
+
+### 触发原因
+- 用户导出串口日志 `D:\串口调试助手-V3\logs\serial_export_20260512_224250.txt` 后，发现 `iq_amp` 与 `iq_pre` 中的 I/Q 重心字段相似，需要统计当前所有日志输出含义并记录。
+
+### 新增文件
+- `文件改动记录/串口日志输出统计_20260512_224250.md`
+
+### 记录内容
+- 统计本次导出日志中实际出现的日志前缀和次数。
+- 对照当前源码列出可能输出的日志格式、当前开关状态、来源文件和主要字段。
+- 明确说明：
+  - `iq_pre.mi/mq/mag` 与 `iq_amp.i_mean/q_mean/mag` 来源相同，存在重复。
+  - `iq_pre.ph_urad` 是 IQ 预处理内部相位累加/跟踪相位。
+  - `iq_amp.ph_urad/ph_mdeg` 才是以去中心后的 `+I` 为 x 正半轴、按 `atan2(Q, I)` 计算的绝对相位。
+
+### 备份
+- 已备份：`文件改动记录/文件改动记录.md.bak_20260512_serial_log_stats`

@@ -1,0 +1,169 @@
+#ifndef APP_MOD_DETECT_H
+#define APP_MOD_DETECT_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifndef APP_MODDET_ADC_MID_CODE
+#define APP_MODDET_ADC_MID_CODE              32768
+#endif
+
+#ifndef APP_MODDET_MIN_AC_POWER
+#define APP_MODDET_MIN_AC_POWER              120U
+#endif
+
+#ifndef APP_MODDET_AM_ENV_PM_THRESHOLD
+#define APP_MODDET_AM_ENV_PM_THRESHOLD       450U
+#endif
+
+#ifndef APP_MODDET_FREQ_ACTIVITY_THRESHOLD
+#define APP_MODDET_FREQ_ACTIVITY_THRESHOLD   28U
+#endif
+
+#ifndef APP_MODDET_PSK_MIN_FREQ_PM
+#define APP_MODDET_PSK_MIN_FREQ_PM           50U
+#endif
+
+#ifndef APP_MODDET_PSK_MAX_FREQ_PM
+#define APP_MODDET_PSK_MAX_FREQ_PM           220U
+#endif
+
+#ifndef APP_MODDET_PSK_MIN_EDGE_PM
+#define APP_MODDET_PSK_MIN_EDGE_PM           40U
+#endif
+
+#ifndef APP_MODDET_PSK_MAX_HIST_PEAKS
+#define APP_MODDET_PSK_MAX_HIST_PEAKS        2U
+#endif
+
+#ifndef APP_MODDET_FSK_MIN_FREQ_PM
+#define APP_MODDET_FSK_MIN_FREQ_PM           40U
+#endif
+
+#ifndef APP_MODDET_SIGN_DOMINANT_PERCENT
+#define APP_MODDET_SIGN_DOMINANT_PERCENT     75U
+#endif
+
+#ifndef APP_MODDET_SIGN_MINOR_PERCENT
+#define APP_MODDET_SIGN_MINOR_PERCENT        25U
+#endif
+
+#ifndef APP_MODDET_ASK_MAX_ENV_LEVELS
+#define APP_MODDET_ASK_MAX_ENV_LEVELS        4U
+#endif
+
+#ifndef APP_MODDET_ASK_MIN_EDGE_PM
+#define APP_MODDET_ASK_MIN_EDGE_PM           40U
+#endif
+
+#ifndef APP_MODDET_ASK_MIN_FREQ_PM
+#define APP_MODDET_ASK_MIN_FREQ_PM           80U
+#endif
+
+#ifndef APP_MODDET_ASK_STRONG_ENV_PM
+#define APP_MODDET_ASK_STRONG_ENV_PM         850U
+#endif
+
+#ifndef APP_MODDET_ASK_STRONG_EDGE_PM
+#define APP_MODDET_ASK_STRONG_EDGE_PM        35U
+#endif
+
+#ifndef APP_MODDET_ENV_LEVEL_BINS
+#define APP_MODDET_ENV_LEVEL_BINS            8U
+#endif
+
+#ifndef APP_MODDET_FSK_SIGN_MIN_PERCENT
+#define APP_MODDET_FSK_SIGN_MIN_PERCENT      30U
+#endif
+
+#ifndef APP_MODDET_FSK_MIN_HIST_PEAKS
+#define APP_MODDET_FSK_MIN_HIST_PEAKS        2U
+#endif
+
+#ifndef APP_MODDET_DPHI_ZERO_PM_THRESHOLD
+#define APP_MODDET_DPHI_ZERO_PM_THRESHOLD    8U
+#endif
+
+#ifndef APP_MODDET_DPHI_STRONG_PM_THRESHOLD
+#define APP_MODDET_DPHI_STRONG_PM_THRESHOLD  40U
+#endif
+
+#ifndef APP_MODDET_HIST_PEAK_MIN_PERCENT
+#define APP_MODDET_HIST_PEAK_MIN_PERCENT     10U
+#endif
+
+#ifndef APP_MODDET_PSK_JUMP_PM_THRESHOLD
+#define APP_MODDET_PSK_JUMP_PM_THRESHOLD     10U
+#endif
+
+#ifndef APP_MODDET_PSK_MIN_POS_PERCENT
+#define APP_MODDET_PSK_MIN_POS_PERCENT       80U
+#endif
+
+#ifndef APP_MODDET_PSK_MAX_NEG_PERCENT
+#define APP_MODDET_PSK_MAX_NEG_PERCENT       20U
+#endif
+
+#ifndef APP_MODDET_PSK_MAX_ENV_PM
+#define APP_MODDET_PSK_MAX_ENV_PM            200U
+#endif
+
+#ifndef APP_MODDET_UART_TRACE_ENABLE
+#define APP_MODDET_UART_TRACE_ENABLE         1U
+#endif
+
+#ifndef APP_MODDET_TRACE_DECIMATION_BLOCKS
+#define APP_MODDET_TRACE_DECIMATION_BLOCKS   64U
+#endif
+
+typedef enum
+{
+  APP_MODDET_MODE_UNKNOWN = 0,
+  APP_MODDET_MODE_NO_CARRIER,
+  APP_MODDET_MODE_CW,
+  APP_MODDET_MODE_AM,
+  APP_MODDET_MODE_ASK,
+  APP_MODDET_MODE_FM,
+  APP_MODDET_MODE_FSK,
+  APP_MODDET_MODE_PSK
+} app_mod_detect_mode_t;
+
+typedef struct
+{
+  uint32_t sample_rate_hz;
+  uint16_t min_block_samples;
+  uint16_t reserved;
+} app_mod_detect_config_t;
+
+typedef struct
+{
+  app_mod_detect_mode_t mode;
+  uint32_t block_count;
+  uint32_t ac_power;
+  uint32_t env_variation_pm;
+  uint32_t env_edge_pm;
+  uint32_t freq_activity;
+  int32_t freq_bias;
+  uint32_t fsk_balance_pm;
+  uint32_t psk_jump_pm;
+  uint16_t env_level_count;
+  uint16_t dphi_hist_peak_count;
+  uint16_t positive_freq_percent;
+  uint16_t negative_freq_percent;
+  uint8_t carrier_present;
+  uint8_t reserved[3];
+} app_mod_detect_status_t;
+
+void app_mod_detect_init(const app_mod_detect_config_t *config);
+void app_mod_detect_process_iq_block(const uint16_t *i_buf, const uint16_t *q_buf, uint32_t sample_cnt);
+void app_mod_detect_get_status(app_mod_detect_status_t *status_out);
+const char *app_mod_detect_mode_name(app_mod_detect_mode_t mode);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* APP_MOD_DETECT_H */

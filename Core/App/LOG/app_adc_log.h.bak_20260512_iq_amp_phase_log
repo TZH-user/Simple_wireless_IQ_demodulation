@@ -1,0 +1,56 @@
+#ifndef APP_ADC_LOG_H
+#define APP_ADC_LOG_H
+
+#include <stdint.h>
+#include "app_signal_detect.h"
+#include "app_iq_preproc.h"
+
+typedef struct
+{
+    uint8_t pending_mask;
+    uint32_t isr_half;
+    uint32_t isr_full;
+    uint32_t task_half;
+    uint32_t task_full;
+    uint32_t overrun;
+} app_adc_log_health_snapshot_t;
+
+typedef struct
+{
+    uint32_t sample_cnt;
+    uint16_t i_min;
+    uint16_t i_max;
+    uint16_t q_min;
+    uint16_t q_max;
+    uint32_t i_clip_lo;
+    uint32_t i_clip_hi;
+    uint32_t q_clip_lo;
+    uint32_t q_clip_hi;
+    uint32_t i_near_lo;
+    uint32_t i_near_hi;
+    uint32_t q_near_lo;
+    uint32_t q_near_hi;
+} app_adc_log_range_snapshot_t;
+
+typedef struct
+{
+    uint8_t valid;
+    int32_t raw_dphi_urad;
+    int32_t rot_dphi_urad;
+    int32_t improve_pm;
+    uint32_t raw_head_mag;
+    uint32_t raw_tail_mag;
+    uint32_t rot_head_mag;
+    uint32_t rot_tail_mag;
+    uint32_t overrun_snapshot;
+    uint32_t rotate_block_cnt_snapshot;
+} app_adc_log_iq_verify_snapshot_t;
+
+void app_adc_log_health_1s(const app_adc_log_health_snapshot_t *snapshot);
+void app_adc_log_algo_1s(const app_signal_detect_status_t *sig);
+void app_adc_log_iq_preproc_1s(uint8_t tracking_active,
+                               const app_iq_preproc_result_t *result,
+                               const app_adc_log_iq_verify_snapshot_t *verify);
+uint8_t app_adc_log_range_1s(const app_adc_log_range_snapshot_t *snapshot);
+
+#endif /* APP_ADC_LOG_H */

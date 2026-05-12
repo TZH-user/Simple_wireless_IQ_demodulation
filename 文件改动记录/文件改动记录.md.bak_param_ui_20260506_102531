@@ -1,0 +1,83 @@
+﻿# 文件改动记录
+
+## 2026-05-06
+
+### 本次任务
+- 按 `D:/CodexProject/2026年校电赛/多AI执行调度书_20260506.md`
+- 依据 `D:/CodexProject/2026年校电赛/决策书_参数分析审查_20260506.md`
+- 执行“代码改动 AI”最小改动方案
+
+### 已修改文件
+- `Core/App/Signal/app_mod_detect.h`
+  - 新增 `APP_MODDET_ASK_MIN_FREQ_PM`
+  - 修改 `APP_MODDET_ASK_MIN_EDGE_PM` 为 `40`
+  - 修改 `APP_MODDET_PSK_JUMP_PM_THRESHOLD` 为 `12`
+  - 新增 `APP_MODDET_PSK_MIN_POS_PERCENT`
+  - 新增 `APP_MODDET_PSK_MAX_NEG_PERCENT`
+  - 新增 `APP_MODDET_PSK_MAX_ENV_PM`
+- `Core/App/Signal/app_mod_detect.c`
+  - 将 `ASK` 判据改为 `env + edge + freq`
+  - 移除 `env_level_count <= APP_MODDET_ASK_MAX_ENV_LEVELS` 作为 `ASK` 必要条件
+  - 将 `PSK` 判据改为简化联合判据
+  - 保持日志字段 `mode/ac/env/edge/lvl/freq/psk/hist/pos/neg/bias`
+- `Core/App/Signal/app_signal_detect.c`
+  - 新增 `sigdet` 最终锁定日志 `sigdet_final`
+
+### 已备份文件
+- `Core/App/Signal/app_mod_detect.c.bak_20260506_codeai`
+- `Core/App/Signal/app_mod_detect.h.bak_20260506_codeai`
+- `Core/App/Signal/app_signal_detect.c.bak_20260506_codeai`
+
+### 编译结果
+- `Debug` 构建通过
+
+### 2026-05-06 第二轮版本一致性改动
+- 输入：`D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/01_方案决策AI_决策输出_20260506.md`
+- 修改文件：`Core/App/Tasks/AdcTask.c`
+  - 新增一次性 `fw_id` 启动日志：`fw_id,moddet_review2_20260506,build=20260506_0308,ask=edge_freq,psk=pos_only`
+  - `fw_id` 输出位置：`StartAdcTask()` 中 `adc_start_stream()`、`app_signal_detect_init()`、`app_mod_detect_init()` 之后
+  - 修复两处历史乱码注释，避免 GCC 将其识别为未闭合注释
+- 新增备份：`Core/App/Tasks/AdcTask.c.bak_20260506_fw_id`
+- 核查结论：`sigdet_final` 已存在于 `Core/App/Signal/app_signal_detect.c`，走 `print_queue_send_log()`，不受 `APP_SIGDET_VPP_UART_TRACE_ENABLE` 限制
+- 编译结果：`Debug` 构建通过
+
+### 2026-05-06 编码复核与修复
+- 依据：`D:/CodexProject/2026年校电赛/00_总控/多AI协作补充规定_编码与写入方式_20260506.md`
+- 复核文件：第二轮调度书、代码改动AI执行结果、工程记录、知识库踩坑记录
+- 发现问题：5 份 Markdown 均非 `UTF-8 with BOM`；其中第二轮调度书与知识库踩坑记录内容本体已损坏，不只是读取方式错误
+- 处理：先备份损坏文件，再重建/重写为 `UTF-8 with BOM`
+
+### 2026-05-06 调度门禁更新（按当前烧录版本 `fw_id`）
+- 依据：用户明确顺序要求“实时串口 `fw_id` -> 采集日志 `fw_id` -> 最小验证集重采 -> 数据分析 AI”
+- 修改文件：`D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/02_多AI执行调度书_第二轮.md`
+- 结论：
+  - 实时串口必须先看到“当前烧录版本对应的 `fw_id`”；本轮实际示例为 `fw_id,moddet_review2_20260506,build=20260506_0308,ask=edge_freq,psk=pos_only`
+  - 若实时串口有当前烧录版本 `fw_id`，但采集日志没有命中同一版本 `fw_id`，先交测试采数 AI 排查采集脚本、日志过滤、串口抓取链路
+  - 在采集日志命中当前烧录版本 `fw_id` 前，不得重采最小验证集，不得交给数据分析 AI
+
+
+### 2026-05-06 `fw_id` 启动日志链路修复
+- 输入：测试数据 AI 反馈“当前实时串口与采集文件都没有 `fw_id`”
+- 修改文件：`Core/App/Tasks/AdcTask.c`、`Core/App/Tasks/PrintfTask.c`
+- 处理：
+  - 将 `fw_id` 输出点从 `AdcTask` 移到 `PrintfTask`
+  - 由 `PrintfTask` 在启动后直接通过 `HAL_UART_Transmit()` 输出
+  - 以 500ms 周期重复输出 4 次，覆盖上电早期抓取窗口
+- 核查结论：
+  - `PrintQueueHandle` 在 RTOS 初始化时已创建
+  - `PrintfTask` 在线程创建顺序上先于 `AdcTask`
+  - `g_uart_mode` 默认值仍为 `UART_MODE_LOG`
+- 编译结果：`Debug` 构建通过
+
+### 2026-05-06 `fw_id` 启动日志链路修复
+- 输入：测试数据 AI 反馈“当前实时串口与采集文件都没有 `fw_id`”
+- 修改文件：`Core/App/Tasks/AdcTask.c`、`Core/App/Tasks/PrintfTask.c`
+- 处理：
+  - 将 `fw_id` 输出点从 `AdcTask` 移到 `PrintfTask`
+  - 由 `PrintfTask` 在启动后直接通过 `HAL_UART_Transmit()` 输出
+  - 以 500ms 周期重复输出 4 次，覆盖上电早期抓取窗口
+- 核查结论：
+  - `PrintQueueHandle` 在 RTOS 初始化时已创建
+  - `PrintfTask` 在线程创建顺序上先于 `AdcTask`
+  - `g_uart_mode` 默认值仍为 `UART_MODE_LOG`
+- 编译结果：`Debug` 构建通过

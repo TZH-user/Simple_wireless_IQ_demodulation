@@ -1,0 +1,328 @@
+﻿# 文件改动记录
+
+## 2026-05-06
+
+### 本次任务
+- 按 `D:/CodexProject/2026年校电赛/多AI执行调度书_20260506.md`
+- 依据 `D:/CodexProject/2026年校电赛/决策书_参数分析审查_20260506.md`
+- 执行“代码改动 AI”最小改动方案
+
+### 已修改文件
+- `Core/App/Signal/app_mod_detect.h`
+  - 新增 `APP_MODDET_ASK_MIN_FREQ_PM`
+  - 修改 `APP_MODDET_ASK_MIN_EDGE_PM` 为 `40`
+  - 修改 `APP_MODDET_PSK_JUMP_PM_THRESHOLD` 为 `12`
+  - 新增 `APP_MODDET_PSK_MIN_POS_PERCENT`
+  - 新增 `APP_MODDET_PSK_MAX_NEG_PERCENT`
+  - 新增 `APP_MODDET_PSK_MAX_ENV_PM`
+- `Core/App/Signal/app_mod_detect.c`
+  - 将 `ASK` 判据改为 `env + edge + freq`
+  - 移除 `env_level_count <= APP_MODDET_ASK_MAX_ENV_LEVELS` 作为 `ASK` 必要条件
+  - 将 `PSK` 判据改为简化联合判据
+  - 保持日志字段 `mode/ac/env/edge/lvl/freq/psk/hist/pos/neg/bias`
+- `Core/App/Signal/app_signal_detect.c`
+  - 新增 `sigdet` 最终锁定日志 `sigdet_final`
+
+### 已备份文件
+- `Core/App/Signal/app_mod_detect.c.bak_20260506_codeai`
+- `Core/App/Signal/app_mod_detect.h.bak_20260506_codeai`
+- `Core/App/Signal/app_signal_detect.c.bak_20260506_codeai`
+
+### 编译结果
+- `Debug` 构建通过
+
+### 2026-05-06 第二轮版本一致性改动
+- 输入：`D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/01_方案决策AI_决策输出_20260506.md`
+- 修改文件：`Core/App/Tasks/AdcTask.c`
+  - 新增一次性 `fw_id` 启动日志：`fw_id,moddet_review2_20260506,build=20260506_0308,ask=edge_freq,psk=pos_only`
+  - `fw_id` 输出位置：`StartAdcTask()` 中 `adc_start_stream()`、`app_signal_detect_init()`、`app_mod_detect_init()` 之后
+  - 修复两处历史乱码注释，避免 GCC 将其识别为未闭合注释
+- 新增备份：`Core/App/Tasks/AdcTask.c.bak_20260506_fw_id`
+- 核查结论：`sigdet_final` 已存在于 `Core/App/Signal/app_signal_detect.c`，走 `print_queue_send_log()`，不受 `APP_SIGDET_VPP_UART_TRACE_ENABLE` 限制
+- 编译结果：`Debug` 构建通过
+
+### 2026-05-06 编码复核与修复
+- 依据：`D:/CodexProject/2026年校电赛/00_总控/多AI协作补充规定_编码与写入方式_20260506.md`
+- 复核文件：第二轮调度书、代码改动AI执行结果、工程记录、知识库踩坑记录
+- 发现问题：5 份 Markdown 均非 `UTF-8 with BOM`；其中第二轮调度书与知识库踩坑记录内容本体已损坏，不只是读取方式错误
+- 处理：先备份损坏文件，再重建/重写为 `UTF-8 with BOM`
+
+### 2026-05-06 调度门禁更新（按当前烧录版本 `fw_id`）
+- 依据：用户明确顺序要求“实时串口 `fw_id` -> 采集日志 `fw_id` -> 最小验证集重采 -> 数据分析 AI”
+- 修改文件：`D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/02_多AI执行调度书_第二轮.md`
+- 结论：
+  - 实时串口必须先看到“当前烧录版本对应的 `fw_id`”；本轮实际示例为 `fw_id,moddet_review2_20260506,build=20260506_0308,ask=edge_freq,psk=pos_only`
+  - 若实时串口有当前烧录版本 `fw_id`，但采集日志没有命中同一版本 `fw_id`，先交测试采数 AI 排查采集脚本、日志过滤、串口抓取链路
+  - 在采集日志命中当前烧录版本 `fw_id` 前，不得重采最小验证集，不得交给数据分析 AI
+
+
+### 2026-05-06 `fw_id` 启动日志链路修复
+- 输入：测试数据 AI 反馈“当前实时串口与采集文件都没有 `fw_id`”
+- 修改文件：`Core/App/Tasks/AdcTask.c`、`Core/App/Tasks/PrintfTask.c`
+- 处理：
+  - 将 `fw_id` 输出点从 `AdcTask` 移到 `PrintfTask`
+  - 由 `PrintfTask` 在启动后直接通过 `HAL_UART_Transmit()` 输出
+  - 以 500ms 周期重复输出 4 次，覆盖上电早期抓取窗口
+- 核查结论：
+  - `PrintQueueHandle` 在 RTOS 初始化时已创建
+  - `PrintfTask` 在线程创建顺序上先于 `AdcTask`
+  - `g_uart_mode` 默认值仍为 `UART_MODE_LOG`
+- 编译结果：`Debug` 构建通过
+
+### 2026-05-06 `fw_id` 启动日志链路修复
+- 输入：测试数据 AI 反馈“当前实时串口与采集文件都没有 `fw_id`”
+- 修改文件：`Core/App/Tasks/AdcTask.c`、`Core/App/Tasks/PrintfTask.c`
+- 处理：
+  - 将 `fw_id` 输出点从 `AdcTask` 移到 `PrintfTask`
+  - 由 `PrintfTask` 在启动后直接通过 `HAL_UART_Transmit()` 输出
+  - 以 500ms 周期重复输出 4 次，覆盖上电早期抓取窗口
+- 核查结论：
+  - `PrintQueueHandle` 在 RTOS 初始化时已创建
+  - `PrintfTask` 在线程创建顺序上先于 `AdcTask`
+  - `g_uart_mode` 默认值仍为 `UART_MODE_LOG`
+- 编译结果：`Debug` 构建通过
+
+### 2026-05-06 UI 参数显示接入
+- 输入：调参工程师闭环结果目录 `D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/50_tuning_engineer_full_algo_loop_20260506_092716`
+- 修改文件：`Core/App/Signal/app_mod_detect.h`
+  - 新增稳定模式、置信度、调制率、AM/ASK 深度、FM 频偏、FSK 频移等状态字段
+- 修改文件：`Core/App/Signal/app_mod_detect.c`
+  - 新增低成本参数估计：包络调制率、包络深度、dphi 频偏估计、稳定模式投票
+  - 扩展 `mod` 日志字段：`stable/conf/rate/depth/dev`
+- 修改文件：`Core/App/LVGL/app_lvgl_ui.c`
+  - 将预留 UI 改为调制识别与参数显示
+  - AM 显示调制深度与调制速率，FM 显示平均频偏与调制速率，FSK/ASK/PSK 显示对应估计参数
+- 修改文件：`Core/App/Tasks/PrintfTask.c`
+  - 更新固件标识为 `fw_id,moddet_param_ui_20260506,build=20260506_1040,ask=strong_env_param,psk=sign75_freq220_param`
+- 编译结果：`Debug` 构建通过
+- 说明：本次不改 ADC/DDS 主链路，不改 I/Q 物理通道定义
+
+- 校正：`Core/App/Signal/app_mod_detect.h` 中默认参数估计采样率改为 `3200000UL`，Debug 已重新构建通过。
+
+### 2026-05-06 ADC 幅度余量测试
+- 输入：`D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/14_发给测试采数AI_ADC幅度余量测试任务书_20260506.md`
+- 修改文件：`Core/App/Tasks/AdcTask.c`
+  - 新增 `ADC_RANGE_LOG_ENABLE` 和相关阈值宏
+  - 新增 `adc_range_accum()` — 对每块 ADC 数据统计 I/Q min/max/near-rail/clip
+  - 新增 `adc_range_log()` — 每 1s 输出 `adc_range,imin=...,imax=...,qmin=...,qmax=...,ivpp=...,qvpp=...,iclo=...,ichi=...,qclo=...,qchi=...,inlo=...,inhi=...,qnlo=...,qnhi=...,n=...`
+  - 新增 `adc_range_reset()` — 重置累积统计
+- 修改文件：`Core/App/Tasks/PrintfTask.c`
+  - fw_id 更新为 `fw_id,adc_range_test_20260506,build=20260506_1230,ask=clip_log=1,psk=none`
+- 编译结果：`Debug` 构建通过，DTCMRAM 82.45%, FLASH 28.94%
+- 测试结果：ADC 在 2.0VPP 下无削顶，I/Q 数据范围约 7800-8300 (仅占满量程 0.8%)
+
+## 2026-05-06 工程健康度与调试探针审查
+
+- 新增审查输出：`D:\CodexProject\2026年校电赛\AI分发_方案决策_20260506\17_方案决策AI_工程健康度与调试探针审查_20260506.md`
+- 审查对象：`D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation` 当前源码与用户截图中的 `AdcTask.c` 14-bit ADC 阈值修正。
+- 结论：图片中的 ADC 阈值改动通过；当前工程为测试/调参固件状态，不是最终提交态。
+- 统计：7 处活跃串口输出探针、4 组默认关闭探针、1 组 ADC 幅度测试临时代码、14 个源码目录备份文件、9 行乱码注释。
+- 风险：`adc_raw_to_v_1e4()` 仍按 16-bit 换算但当前路径关闭；`adc_range` 与 `ui/mod` 调试日志仍开启；本地环境缺少 `cmake/ninja`，本轮未能重新构建。
+
+## 2026-05-07 频谱接入回退
+
+- 用户要求：回退到“未接入基带频谱”状态。
+- 修改文件：`CMakeLists.txt`
+  - 移除 `BasebandSpectrumTask.c`
+  - 移除 `app_baseband_spectrum.c`
+  - 移除 CMSIS-DSP 频谱编译源
+  - 移除 `ARM_MATH_CM7` 频谱阶段编译宏
+- 修改文件：`Core/App/Tasks/AdcTask.c`
+  - 移除 `app_baseband_spectrum` 和 `BasebandSpectrumTask` 头文件引用
+  - 移除频谱模块初始化与独立任务启动
+  - 移除锁定后的频谱 block 提交与失锁失效处理
+- 修改文件：`Core/App/LVGL/app_lvgl_ui.c`
+  - 回退到底部“Feature / FFT Area”预留区版本
+  - 删除频谱柱状图与 `bbsp` 状态展示
+- 修改文件：`Core/App/Tasks/PrintfTask.c`
+  - 固件标识回退为 `fw_id,carrier_lockerr_20260507,build=20260507_0209,ask=mod_nochange,psk=sigdet_cond_corr`
+- 删除文件：
+  - `Core/App/Signal/app_baseband_spectrum.c`
+  - `Core/App/Signal/app_baseband_spectrum.h`
+  - `Core/App/Tasks/BasebandSpectrumTask.c`
+  - `Core/App/Tasks/BasebandSpectrumTask.h`
+- 说明：
+  - 保留载波锁定误差修正逻辑
+  - 保留现有调制识别与参数显示
+  - 本次只撤回频谱相关接入
+
+## 2026-05-07 AdcTask BusFault 修复
+
+- 现象：现场调试进入 `BusFault_Handler`，调用链为 `StartAdcTask -> app_mod_detect_process_iq_block -> print_queue_send_log -> osMessageQueuePut`
+- 判断：更像任务栈余量不足后破坏了 FreeRTOS 队列/链表，不像频谱回退逻辑本身错误
+- 修改文件：`Core/Src/freertos.c`
+  - `PrintfTask` 栈从 `256 * 4` 提高到 `512 * 4`
+  - `AdcTask` 栈从 `384 * 4` 提高到 `1024 * 4`
+- 修改文件：`Core/App/Tasks/PrintfTask.c`
+  - `print_queue_send_typed()` 增加 `text / PrintQueueHandle` 空指针保护
+  - 队列发送由 `osWaitForever` 改为 `0U` 超时，拥塞时直接丢弃日志，不阻塞 ADC 路径
+- 修改文件：`Core/App/Tasks/AdcTask.c`
+  - 引入 `FreeRTOS.h` 与 `task.h`
+  - `adc_log_health_1s()` 预留栈高水位日志字段 `stk_adc / stk_printf`
+- 编译结果：`Debug` 构建通过
+
+## 2026-05-07 基带频谱显示接入
+
+### 输入
+- `D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/24_发给改代码AI_基带频谱显示接入任务书_20260507.md`
+- 前置放行：`23_方案决策AI_载波锁定误差审查与基带频谱放行_20260507.md`
+
+### 已修改文件
+- `Core/App/Tasks/AdcTask.c`
+  - 新增 `app_baseband_spectrum` 初始化与独立任务启动
+  - 锁定后只提交 I/Q block 快照，不在 `AdcTask` 内做频谱计算
+  - 未锁定时主动清空频谱状态，避免 UI 显示旧值
+- `Core/App/LVGL/app_lvgl_ui.c`
+  - 底部预留区改为 `Baseband Spectrum`
+  - UI 刷新周期改为 `80ms`
+  - 只读取频谱状态并显示 `valid/peak/mag/noise/dc/LO/Carrier`
+- `Core/App/Tasks/PrintfTask.c`
+  - 固件标识更新为 `fw_id,bbsp_ui_20260507,build=20260507_0235,ask=mod_nochange,psk=bbsp_task`
+- `CMakeLists.txt`
+  - 接入 `BasebandSpectrumTask.c` 与 `app_baseband_spectrum.c`
+- `Core/App/Tasks/BasebandSpectrumTask.c/.h`
+  - 新增独立低优先级频谱任务，负责周期调度与 `bbsp` 日志输出
+- `Core/App/Signal/app_baseband_spectrum.c/.h`
+  - 新增基带频谱状态模块，负责快照抽取后的频谱特征计算
+
+### 已备份文件
+- `Core/App/Tasks/AdcTask.c.bak_20260507_bbsp`
+- `Core/App/LVGL/app_lvgl_ui.c.bak_20260507_bbsp`
+- `Core/App/Tasks/PrintfTask.c.bak_20260507_bbsp`
+- `CMakeLists.txt.bak_20260507_bbsp`
+- `D:/CodexProject/2026年校电赛/AI分发_方案决策_20260506/24_发给改代码AI_基带频谱显示接入任务书_20260507.md.bak_20260507_bbsp`
+
+### 编译结果
+- `Debug` 构建通过
+- `DTCMRAM: 111224 B / 128 KB (84.86%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 611984 B / 2 MB (29.18%)`
+## 2026-05-07 复数基带频谱柱状图升级
+
+### 输入
+- 用户确认将待接入方案正式写入当前工程
+- 规格：复数基带频谱，`-100kHz ~ +100kHz`，中心 `0Hz`，`41` 柱，`5kHz` 步进
+
+### 已修改文件
+- `Core/App/Signal/app_baseband_spectrum.h`
+  - 状态结构扩展为 `41` 柱固定频点频谱
+  - 新增 `bars[]`、`bin_hz[]`、`update_tick_ms`
+  - `peak_hz` 改为有符号频率
+- `Core/App/Signal/app_baseband_spectrum.c`
+  - 由摘要频谱升级为复数基带固定频点能量计算
+  - `0Hz` 柱使用 `dc_mag`
+  - 非零频点使用去均值后的复数能量投影
+  - 新增相对归一化柱值输出，范围 `0~1000`
+- `Core/App/LVGL/app_lvgl_ui.c`
+  - 底部频谱区升级为 `LV_CHART_TYPE_BAR` 柱状图
+  - 横轴提示：`-100k / 0 / +100k`
+  - 保留摘要文本显示 `valid/peak/mag/noise/dc/LO/Carrier`
+- `Core/App/Tasks/PrintfTask.c`
+
+## 2026-05-07 实时解调界面接入（进行中）
+
+### 已修改文件
+- `Core/App/LVGL/app_lvgl_ui.c`
+  - 新增识别页/解调页双页面容器
+  - 新增 `Enter Demod` 与 `Back` 按钮
+  - 新增基于 `lv_chart` 的 AM 解调波形显示区
+  - 新增解调页面状态刷新与页面切换逻辑
+  - 进入解调页时启用 `app_demod` 并恢复 `DemodTask`
+  - 返回识别页时关闭 `app_demod` 并挂起 `DemodTask`
+
+### 说明
+- 本次仅修改 UI 层
+- 当前解调页只对 `AM` 有有效波形显示
+- 其他模式先显示 unsupported，占位等待后续算法接入
+  - 固件标识更新为 `fw_id,bbsp_complex_20260507,build=20260507_1130,ask=mod_nochange,psk=bbsp41_goertzel`
+
+### 已备份文件
+- `Core/App/Signal/app_baseband_spectrum.h.bak_20260507_bbspcomplex`
+- `Core/App/Signal/app_baseband_spectrum.c.bak_20260507_bbspcomplex`
+- `Core/App/LVGL/app_lvgl_ui.c.bak_20260507_bbspcomplex`
+- `Core/App/Tasks/PrintfTask.c.bak_20260507_bbspcomplex`
+
+### 编译结果
+- `Debug` 构建通过
+- `DTCMRAM: 111488 B / 128 KB (85.06%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 615920 B / 2 MB (29.37%)`
+
+- [2026-05-07] 修复解调页 Back 按钮失效：LVGL 按钮事件由 LV_EVENT_CLICKED 调整为 LV_EVENT_RELEASED，并将 Back 按钮提升到前景层，减少触摸抖动/层级覆盖导致的失效。
+
+- [2026-05-07] 修复解调页无法退出的调度风险：在 freertos.c 的 USER CODE RTOS_THREADS 中显式提升 TouchTask 到 osPriorityNormal，并将 DemodTask 下调到 osPriorityBelowNormal，避免解调期间触摸任务被饿死。
+
+- [2026-05-07] 新增 [恒温晶振更换后复测清单_20260507.md](D:/VSCodeCMAKEProject/Simple_wireless_IQ_demodulation/恒温晶振更换后复测清单_20260507.md)，用于恒温晶振接入后的最小复测与代码决策。
+
+## 2026-05-07 SI5351 外部参考接入
+
+### 输入与前置基底
+- 用户确认时钟链路采用 `OCXO 10MHz -> SI5351 CLKIN -> SI5351 CLK0 25MHz -> AD9959 REF_CLK`
+- 用户先在 `CubeMX` 中启用 `I2C1`，并绑定 `PB6=I2C1_SCL`、`PB7=I2C1_SDA`
+- 代码侧保持 `AD9959` 现有 `25MHz x 20 = 500MHz SYSCLK` 模型，不改 `ad9959.c`
+
+### 已修改文件
+- `Core/App/Tasks/SI5351.c`
+  - 新增固定功能任务实现，使用 `I2C1` 访问 `SI5351`
+  - 启动时自动探测 `0x60/0x61` 地址
+  - 固定配置 `PLLA: 10MHz CLKIN -> 800MHz`、`CLK0: 25MHz`
+  - 检查 `LOS_CLKIN / LOL_A`，只有参考有效且 PLLA 锁定后才使能 `CLK0`
+  - 运行中若 `CLKIN` 丢失或 PLL 解锁，则关闭 `CLK0` 并输出日志
+- `Core/App/Tasks/SI5351.h`
+  - 新增 `app_si5351_is_clock_ready()` 声明，供 `DDSTask` 查询参考时钟是否就绪
+- `Core/App/Tasks/DDSTask.c`
+  - 在 `AppDDS_Init()` 前等待 `SI5351` 参考就绪
+  - 增加一次性等待/就绪串口日志
+- `CMakeLists.txt`
+  - 将 `Core/App/Tasks/SI5351.c` 加入构建
+
+### 已备份文件
+- `Core/App/Tasks/SI5351.c.bak_20260508_si5351clk`
+- `Core/App/Tasks/DDSTask.c.bak_20260508_si5351clk`
+- `Core/App/Tasks/Types/RtosTypes.h.bak_20260508_si5351clk`
+- `CMakeLists.txt.bak_20260508_si5351clk`
+- `文件改动记录.md.bak_20260508_si5351clk`
+- `方案改动记录.md.bak_20260508_si5351clk`
+
+### 编译结果
+- 使用 `STM32Cube` 自带 `cmake + ninja` 重新构建 `build/Debug`
+- `Debug` 构建通过
+- `DTCMRAM: 76744 B / 128 KB (58.55%)`
+- `RAM: 234656 B / 512 KB (44.76%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 721804 B / 2 MB (34.42%)`
+
+### 说明
+- 本轮未改 `Core/App/DDS_9959/Hardware/ad9959.c`
+- `Core/Inc/i2c.h`、`Core/Src/i2c.c`、`Core/Src/main.c` 属于用户先行 `CubeMX` 生成基底，本轮直接在该基底上接入
+
+## 2026-05-08 SI5351 双路 25MHz 输出
+
+### 输入
+- 用户要求在保持现有 `CLK0=25MHz` 的基础上，再开启 `CLK1=25MHz`
+- 输出用途面向 `AD9959` 参考时钟链路，要求同时考虑驱动强度
+
+### 已修改文件
+- `Core/App/Tasks/SI5351.c`
+  - 新增 `CLK1` 控制寄存器与 `MS1` 参数配置
+  - 将 `CLK1` 配置为与 `CLK0` 同源同频：`PLLA 800MHz / 32 = 25MHz`
+  - 将输出使能逻辑从单路 `CLK0` 扩为同时控制 `CLK0/CLK1`
+  - 启动成功日志更新为 `clk0/clk1=25MHz drive=8mA`
+  - `CLK0/CLK1` 驱动强度固定为 `8mA`
+
+### 已备份文件
+- `Core/App/Tasks/SI5351.c.bak_20260508_clk1dual`
+- `文件改动记录.md.bak_20260508_clk1dual`
+- `方案改动记录.md.bak_20260508_clk1dual`
+
+### 编译结果
+- 使用 `STM32Cube` 自带 `cmake + ninja` 重新构建 `build/Debug`
+- `Debug` 构建通过
+- `DTCMRAM: 76744 B / 128 KB (58.55%)`
+- `RAM: 234656 B / 512 KB (44.76%)`
+- `RAM_D2: 32 KB / 288 KB (11.11%)`
+- `FLASH: 721876 B / 2 MB (34.42%)`
+
+### 说明
+- 本轮仍未改 `Core/App/DDS_9959/Hardware/ad9959.c`
+- 当前先使用 `8mA` 驱动，优先保证送 `AD9959` 时钟线的边沿与裕量；若后续示波器看到明显振铃或过冲，再回调到 `6mA`

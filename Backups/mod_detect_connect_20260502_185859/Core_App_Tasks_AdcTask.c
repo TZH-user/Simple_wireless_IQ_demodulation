@@ -1,0 +1,222 @@
+﻿#include "cmsis_os2.h"
+#include "main.h"
+#include "adc.h"
+#include "tim.h"
+#include "app_signal_detect.h"
+#include <stdio.h>
+#include <string.h>
+#include "RtosTypes.h"
+
+#define ADC_UART_OUTPUT_ENABLE 0U
+
+static uint32_t adc_raw_to_v_1e4(uint16_t raw)
+{
+    return (uint32_t)((((uint64_t)raw * 33000ULL) + 32767ULL) / 65535ULL);
+}
+
+static void adc_start_stream(void)
+{
+    adc1_half_ready = 0U;
+    adc1_full_ready = 0U;
+    adc2_half_ready = 0U;
+    adc2_full_ready = 0U;
+    adc_block_ready_mask = 0U;
+
+    if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc1_buf, ADC_BUFFER_N) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    if (HAL_ADC_Start_DMA(&hadc2, (uint32_t *)adc2_buf, ADC_BUFFER_N) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    if (HAL_TIM_Base_Start(&htim6) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+static inline void adc_invalidate_block_cache(uint32_t start_index)
+{
+#if (__DCACHE_PRESENT == 1U)
+    const int32_t bytes = (int32_t)(ADC_BLOCK_N * sizeof(uint16_t));
+    SCB_InvalidateDCache_by_Addr((uint32_t *)&adc1_buf[start_index], bytes);
+    SCB_InvalidateDCache_by_Addr((uint32_t *)&adc2_buf[start_index], bytes);
+#else
+    (void)start_index;
+#endif
+}
+
+static void adc_publish_block_to_queue(uint32_t start_index)
+{
+    print_msg_t msg;
+    int n;
+
+    msg.len = 0U;
+    msg.kind = PRINT_KIND_VOFA;
+
+    for (uint32_t i = start_index; i < (start_index + ADC_BLOCK_N); i += VOFA_SEND_STEP)
+    {
+        uint32_t adc1_v_1e4 = adc_raw_to_v_1e4(adc1_buf[i]);
+        uint32_t adc2_v_1e4 = adc_raw_to_v_1e4(adc2_buf[i]);
+
+        n = snprintf(&msg.data[msg.len],
+                     sizeof(msg.data) - msg.len,
+                     "%lu.%04lu,%lu.%04lu\n",
+                     adc1_v_1e4 / 10000UL,
+                     adc1_v_1e4 % 10000UL,
+                     adc2_v_1e4 / 10000UL,
+                     adc2_v_1e4 % 10000UL);
+
+        if ((n <= 0) || ((size_t)n >= (sizeof(msg.data) - msg.len)))
+        {
+            osMessageQueuePut(PrintQueueHandle, &msg, 0U, osWaitForever);
+            msg.len = 0U;
+
+            n = snprintf(&msg.data[msg.len],
+                         sizeof(msg.data) - msg.len,
+                         "%lu.%04lu,%lu.%04lu\n",
+                         adc1_v_1e4 / 10000UL,
+                         adc1_v_1e4 % 10000UL,
+                         adc2_v_1e4 / 10000UL,
+                         adc2_v_1e4 % 10000UL);
+
+            if ((n <= 0) || ((size_t)n >= sizeof(msg.data)))
+            {
+                continue;
+            }
+        }
+
+        msg.len += (uint16_t)n;
+    }
+
+    if (msg.len > 0U)
+    {
+        osMessageQueuePut(PrintQueueHandle, &msg, 0U, osWaitForever);
+    }
+}
+
+static void adc_log_health_1s(void)
+{
+    if (ADC_UART_OUTPUT_ENABLE == 0U)
+    {
+        return;
+    }
+
+    static uint32_t last_log_tick = 0U;
+    uint32_t now_tick = osKernelGetTickCount();
+
+    if ((uint32_t)(now_tick - last_log_tick) < 1000U)
+    {
+        return;
+    }
+    last_log_tick = now_tick;
+
+    if (g_uart_mode != UART_MODE_LOG)
+    {
+        return;
+    }
+
+    uint8_t pending_mask;
+    uint32_t isr_half;
+    uint32_t isr_full;
+    uint32_t task_half;
+    uint32_t task_full;
+    uint32_t overrun;
+    char log_buf[120];
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    pending_mask = adc_block_ready_mask;
+    isr_half = adc_isr_half_cnt;
+    isr_full = adc_isr_full_cnt;
+    task_half = adc_task_half_cnt;
+    task_full = adc_task_full_cnt;
+    overrun = adc_overrun_cnt;
+    __set_PRIMASK(primask);
+
+    int n = snprintf(log_buf,
+                     sizeof(log_buf),
+                     "adc_health: isr(h=%lu,f=%lu) task(h=%lu,f=%lu) pend=0x%02X ov=%lu\r\n",
+                     (unsigned long)isr_half,
+                     (unsigned long)isr_full,
+                     (unsigned long)task_half,
+                     (unsigned long)task_full,
+                     (unsigned int)pending_mask,
+                     (unsigned long)overrun);
+    if (n > 0)
+    {
+        print_queue_send_log(log_buf);
+    }
+}
+
+void StartAdcTask(void *argument)
+{
+    (void)argument;
+
+    adc_start_stream();
+    app_signal_detect_init();
+
+    for (;;)
+    {
+        if (osSemaphoreAcquire(AdcFrameReadySemHandle, osWaitForever) != osOK)
+        {
+            continue;
+        }
+
+        for (;;)
+        {
+            uint8_t block_flag = 0U;
+            uint32_t start_index = 0U;
+
+            uint32_t primask = __get_PRIMASK(); /* 进入临界区，禁止中断，避免与 ADC 中断冲突 */
+            __disable_irq();    
+            /* 先检查哪个数据块准备好了，清除标志位后再退出临界区，确保数据块不会在处理过程中被覆盖。*/ 
+            if ((adc_block_ready_mask & 0x01U) != 0U)
+            {
+                adc_block_ready_mask &= (uint8_t)~0x01U;
+                block_flag = 0x01U;
+                start_index = 0U;
+            }
+            else if ((adc_block_ready_mask & 0x02U) != 0U)
+            {
+                adc_block_ready_mask &= (uint8_t)~0x02U;
+                block_flag = 0x02U;
+                start_index = ADC_BLOCK_N;
+            }
+            __set_PRIMASK(primask); /* 退出临界区，允许中断 */
+
+            if (block_flag == 0U)
+            {
+                break;
+            }
+
+            /* 数据块准备好，先让 CPU 缓存失效，确保后续访问的是最新的 ADC 数据。 */
+            adc_invalidate_block_cache(start_index);
+
+            if (block_flag == 0x01U)
+            {
+                adc_task_half_cnt++;
+            }
+            else
+            {
+                adc_task_full_cnt++;
+            }
+
+            if ((ADC_UART_OUTPUT_ENABLE != 0U) && (g_uart_mode == UART_MODE_VOFA))
+            {
+                adc_publish_block_to_queue(start_index);
+            }
+
+            /* Fixed mapping for detector input:
+             *   adc1_buf -> I path (PC4 / ADC1_INP4)
+             *   adc2_buf -> Q path (PB1 / ADC2_INP5)
+             */
+            app_signal_detect_process_block(&adc1_buf[start_index], &adc2_buf[start_index], ADC_BLOCK_N);
+        }
+
+        adc_log_health_1s();
+    }
+}

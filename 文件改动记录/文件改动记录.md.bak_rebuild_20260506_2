@@ -1,0 +1,50 @@
+﻿# 文件改动记录
+
+## 2026-05-06
+
+### 本次任务
+- 按 `D:/CodexProject/2026年校电赛/多AI执行调度书_20260506.md`
+- 依据 `D:/CodexProject/2026年校电赛/决策书_参数分析审查_20260506.md`
+- 执行“代码改动 AI”最小改动方案
+
+### 已修改文件
+- `Core/App/Signal/app_mod_detect.h`
+  - 新增 `APP_MODDET_ASK_MIN_FREQ_PM`
+  - 修改 `APP_MODDET_ASK_MIN_EDGE_PM` 为 `40`
+  - 修改 `APP_MODDET_PSK_JUMP_PM_THRESHOLD` 为 `12`
+  - 新增 `APP_MODDET_PSK_MIN_POS_PERCENT`
+  - 新增 `APP_MODDET_PSK_MAX_NEG_PERCENT`
+  - 新增 `APP_MODDET_PSK_MAX_ENV_PM`
+- `Core/App/Signal/app_mod_detect.c`
+  - 将 `ASK` 判据改为 `env + edge + freq`
+  - 移除 `env_level_count <= APP_MODDET_ASK_MAX_ENV_LEVELS` 作为 `ASK` 必要条件
+  - 将 `PSK` 判据改为简化联合判据
+  - 保持日志字段 `mode/ac/env/edge/lvl/freq/psk/hist/pos/neg/bias`
+- `Core/App/Signal/app_signal_detect.c`
+  - 新增 `sigdet` 最终锁定日志 `sigdet_final`
+
+### 已备份文件
+- `Core/App/Signal/app_mod_detect.c.bak_20260506_codeai`
+- `Core/App/Signal/app_mod_detect.h.bak_20260506_codeai`
+- `Core/App/Signal/app_signal_detect.c.bak_20260506_codeai`
+
+### 编译结果
+- `Debug` 构建通过
+
+### 2026-05-06 �ڶ��ְ汾һ���ԸĶ�
+- ���룺`D:/CodexProject/2026��У����/AI�ַ�_��������_20260506/01_��������AI_�������_20260506.md`
+- �޸��ļ���`Core/App/Tasks/AdcTask.c`
+  - ����һ���� `fw_id` �����־��`fw_id,moddet_review2_20260506,build=20260506_0308,ask=edge_freq,psk=pos_only`
+  - `fw_id` ���λ�ã�`StartAdcTask()` �� `adc_start_stream()`��`app_signal_detect_init()`��`app_mod_detect_init()` ֮��
+  - �޸�������ʷ����ע�ͣ����� GCC ����ʶ��Ϊδ�պ�ע��
+- �������ݣ�`Core/App/Tasks/AdcTask.c.bak_20260506_fw_id`
+- �˲���ۣ�`sigdet_final` �Ѵ����� `Core/App/Signal/app_signal_detect.c`���� `print_queue_send_log()`������ `APP_SIGDET_VPP_UART_TRACE_ENABLE` ����
+- ��������`Debug` ����ͨ��
+
+
+### 2026-05-06 编码复核与修复
+- 依据：D:/CodexProject/2026年校电赛/00_总控/多AI协作补充规定_编码与写入方式_20260506.md`r
+- 复核文件：第二轮调度书、代码改动AI执行结果、工程记录、知识库踩坑记录
+- 发现问题：5 份 Markdown 均非 UTF-8 with BOM；其中第二轮调度书与知识库踩坑记录内容本体已损坏，不只是读取方式错误
+- 处理：先备份损坏文件，再重建/重写为 UTF-8 with BOM`r
+

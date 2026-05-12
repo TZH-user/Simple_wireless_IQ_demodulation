@@ -1,0 +1,144 @@
+﻿#include "ModDetectTask.h"
+
+#include <string.h>
+
+#include "adc.h"
+#include "app_mod_detect.h"
+#include "RtosTypes.h"
+
+typedef struct
+{
+    uint16_t i_buf[ADC_BLOCK_N];
+    uint16_t q_buf[ADC_BLOCK_N];
+    uint32_t sample_cnt;
+    uint32_t demod_lo_hz;
+    uint32_t carrier_hz;
+    uint32_t sequence;
+    uint32_t tick_ms;
+    uint8_t in_use;
+} moddetect_snapshot_t;
+
+__attribute__((section(".moddetect_buffer"))) __attribute__((aligned(32)))
+static moddetect_snapshot_t g_moddetect_slots[MODDETECT_SNAPSHOT_SLOT_COUNT];
+
+static moddetect_task_stats_t g_moddetect_stats;
+static uint32_t g_moddetect_next_sequence = 1U;
+
+static int32_t moddetect_task_claim_slot(void)
+{
+    int32_t slot = -1;
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    for (uint32_t idx = 0U; idx < MODDETECT_SNAPSHOT_SLOT_COUNT; idx++)
+    {
+        if (g_moddetect_slots[idx].in_use == 0U)
+        {
+            g_moddetect_slots[idx].in_use = 1U;
+            slot = (int32_t)idx;
+            break;
+        }
+    }
+    __set_PRIMASK(primask);
+
+    return slot;
+}
+
+static void moddetect_task_release_slot(uint32_t slot)
+{
+    if (slot >= MODDETECT_SNAPSHOT_SLOT_COUNT)
+    {
+        return;
+    }
+
+    uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    g_moddetect_slots[slot].in_use = 0U;
+    __set_PRIMASK(primask);
+}
+
+uint32_t moddetect_task_submit_block(const uint16_t *i_buf,
+                                     const uint16_t *q_buf,
+                                     uint32_t sample_cnt,
+                                     uint32_t demod_lo_hz,
+                                     uint32_t carrier_hz,
+                                     uint32_t tick_ms)
+{
+    int32_t slot;
+    uint32_t slot_index;
+    moddetect_snapshot_t *snapshot;
+
+    if ((i_buf == NULL) || (q_buf == NULL) || (sample_cnt == 0U) ||
+        (sample_cnt > ADC_BLOCK_N) || (ModDetectQueueHandle == NULL))
+    {
+        return 0U;
+    }
+
+    slot = moddetect_task_claim_slot();
+    if (slot < 0)
+    {
+        g_moddetect_stats.submit_drop_cnt++;
+        return 0U;
+    }
+
+    slot_index = (uint32_t)slot;
+    snapshot = &g_moddetect_slots[slot_index];
+    memcpy(snapshot->i_buf, i_buf, sample_cnt * sizeof(uint16_t));
+    memcpy(snapshot->q_buf, q_buf, sample_cnt * sizeof(uint16_t));
+    snapshot->sample_cnt = sample_cnt;
+    snapshot->demod_lo_hz = demod_lo_hz;
+    snapshot->carrier_hz = carrier_hz;
+    snapshot->tick_ms = tick_ms;
+    snapshot->sequence = g_moddetect_next_sequence++;
+
+    if (osMessageQueuePut(ModDetectQueueHandle, &slot_index, 0U, 0U) != osOK)
+    {
+        g_moddetect_stats.queue_full_drop_cnt++;
+        moddetect_task_release_slot(slot_index);
+        return 0U;
+    }
+
+    g_moddetect_stats.submit_ok_cnt++;
+    g_moddetect_stats.last_sequence = snapshot->sequence;
+    return 1U;
+}
+
+void moddetect_task_get_stats(moddetect_task_stats_t *stats_out)
+{
+    if (stats_out == NULL)
+    {
+        return;
+    }
+
+    *stats_out = g_moddetect_stats;
+}
+
+void StartModDetectTask(void *argument)
+{
+    uint32_t slot_index;
+
+    (void)argument;
+
+    memset(g_moddetect_slots, 0, sizeof(g_moddetect_slots));
+    memset(&g_moddetect_stats, 0, sizeof(g_moddetect_stats));
+
+    for (;;)
+    {
+        if (osMessageQueueGet(ModDetectQueueHandle, &slot_index, NULL, osWaitForever) != osOK)
+        {
+            continue;
+        }
+
+        if (slot_index >= MODDETECT_SNAPSHOT_SLOT_COUNT)
+        {
+            continue;
+        }
+
+        app_mod_detect_process_iq_block(g_moddetect_slots[slot_index].i_buf,
+                                        g_moddetect_slots[slot_index].q_buf,
+                                        g_moddetect_slots[slot_index].sample_cnt);
+        g_moddetect_stats.process_cnt++;
+        moddetect_task_release_slot(slot_index);
+    }
+}
