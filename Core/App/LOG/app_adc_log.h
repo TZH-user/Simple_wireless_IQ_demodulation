@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "app_signal_detect.h"
 #include "app_iq_preproc.h"
+#include "app_carrier_sync.h"
 
 typedef struct
 {
@@ -54,6 +55,8 @@ void app_adc_log_iq_amp_phase_1s(uint8_t tracking_active,
 void app_adc_log_iq_preproc_1s(uint8_t tracking_active,
                                const app_iq_preproc_result_t *result,
                                const app_adc_log_iq_verify_snapshot_t *verify);
+/* 函数说明：每秒输出 VRFE 当前闭环模式、电压、频偏、逐点相位误差和相位接管状态。 */
+void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status);
 uint8_t app_adc_log_range_1s(const app_adc_log_range_snapshot_t *snapshot);
 
 #endif /* APP_ADC_LOG_H */

@@ -292,6 +292,8 @@ static void app_signal_iq_preproc_process_block(const uint16_t *i_buf,
         /* 判断：`analyzed != 0U`。含义：用于防空指针、未初始化、计数为 0 或开关关闭等边界条件；成立后更新相关状态变量/输出字段，然后继续后续流程。 */
         if (analyzed != 0U)
         {
+            app_carrier_sync_status_t carrier_status;
+
             /* 函数跳转：调用 osKernelGetTickCount()，读取 RTOS tick，用于记录扫频开始/结束或控制更新间隔。 */
             now_tick = osKernelGetTickCount();
             /* 判断：`(uint32_t)(now_tick - last_verify_tick) >= IQ_PREPROC_LOG_PERIOD_MS`。含义：决定是否进入下面的大括号分支；成立后调用 app_signal_iq_preproc_update_verify()：执行该步骤对应的子流程。 */
@@ -309,8 +311,17 @@ static void app_signal_iq_preproc_process_block(const uint16_t *i_buf,
             /* 函数跳转：调用 app_adc_log_iq_amp_phase_1s()，锁定后每秒输出 I/Q 两路幅度和 atan2(Q,I) 相位，便于串口观察相位是否靠近 0。 */
             app_adc_log_iq_amp_phase_1s(iq_preproc_tracking_active,
                                         &iq_preproc_result);
-            /* 函数跳转：调用 app_carrier_sync_update()，根据 IQ 预处理得到的残余频偏更新 DAC 控制量。 */
-            app_carrier_sync_update(1U, &iq_preproc_result);
+            /* 函数跳转：调用 app_carrier_sync_update_iq()，在频率锁定后用原始 IQ block 计算逐点相位并选择频率/相位闭环。 */
+            app_carrier_sync_update_iq(1U,
+                                       i_buf,
+                                       q_buf,
+                                       sample_cnt,
+                                       iq_preproc_ctx.adc_mid,
+                                       &iq_preproc_result);
+            /* 函数跳转：调用 app_carrier_sync_get_status()，读取 VRFE 闭环模式、电压和相位误差给串口日志。 */
+            app_carrier_sync_get_status(&carrier_status);
+            /* 函数跳转：调用 app_adc_log_carrier_sync_1s()，每秒输出频率/相位闭环状态，便于判断是否已相位接管。 */
+            app_adc_log_carrier_sync_1s(&carrier_status);
         }
         return;
     }
