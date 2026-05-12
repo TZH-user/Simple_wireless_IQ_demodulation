@@ -59,6 +59,9 @@ typedef struct
     int32_t phase_control_mdeg;       /* 相位 DPLL 的合成控制量，等于相位误差叠加相位变化率阻尼后的结果。 */
     int32_t phase_delta_uv;           /* 最近一次相位 DPLL 输出到 VRFE 的电压增量，单位 uV。 */
     int32_t phase_target_mdeg;        /* 相位目标角，当前默认 90 度，单位毫度。 */
+    int32_t phase_freq_lpf_millihz;   /* 相位接管后 residual_freq_millihz 的低通结果，单位 mHz，用于判断频率是否仍在慢漂。 */
+    uint32_t phase_slew_limit_uv;      /* 当前相位 DPLL 实际采用的单次最大步进，单位 uV，近目标时会自动减小。 */
+    uint32_t phase_brake_count;        /* 相位误差跨越目标后触发内部 trim 衰减的次数，用于确认是否进入减速保护。 */
 } app_carrier_sync_status_t;
 
 /* 调试观察用快照；变量窗口可直接查看，不影响闭环内部状态。 */

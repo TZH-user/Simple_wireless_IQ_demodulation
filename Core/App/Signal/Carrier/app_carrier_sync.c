@@ -145,6 +145,31 @@
 #define APP_CARRIER_PHASE_DPLL_MAX_STEP_UV 3
 #endif
 
+/* 宏定义说明：APP_CARRIER_PHASE_NEAR_BAND_MDEG = 10000；相位误差进入 10 度近区后启用低速靠近策略，避免越过 90 度后继续冲。 */
+#ifndef APP_CARRIER_PHASE_NEAR_BAND_MDEG
+#define APP_CARRIER_PHASE_NEAR_BAND_MDEG 10000
+#endif
+
+/* 宏定义说明：APP_CARRIER_PHASE_NEAR_MAX_STEP_UV = 1；相位近区内单次 DAC 最大步进，单位 uV，用于接近目标时减速。 */
+#ifndef APP_CARRIER_PHASE_NEAR_MAX_STEP_UV
+#define APP_CARRIER_PHASE_NEAR_MAX_STEP_UV 1
+#endif
+
+/* 宏定义说明：APP_CARRIER_PHASE_CROSS_BRAKE_MDEG = 15000；相位误差在该近区内发生正负跨越时触发 trim 衰减。 */
+#ifndef APP_CARRIER_PHASE_CROSS_BRAKE_MDEG
+#define APP_CARRIER_PHASE_CROSS_BRAKE_MDEG 15000
+#endif
+
+/* 宏定义说明：APP_CARRIER_PHASE_CROSS_DAMP_PM = 700；跨越目标后保留内部 trim 的千分比，700 表示保留 70%。 */
+#ifndef APP_CARRIER_PHASE_CROSS_DAMP_PM
+#define APP_CARRIER_PHASE_CROSS_DAMP_PM 700
+#endif
+
+/* 宏定义说明：APP_CARRIER_PHASE_RESIDUAL_LPF_SHIFT = 3；相位模式 residual 低通强度，3 表示按 1/8 速度更新。 */
+#ifndef APP_CARRIER_PHASE_RESIDUAL_LPF_SHIFT
+#define APP_CARRIER_PHASE_RESIDUAL_LPF_SHIFT 3U
+#endif
+
 /* 宏定义说明：APP_CARRIER_PHASE_DPLL_TRIM_LIMIT_UV = 3000；相位环只允许在接管基准电压附近微调的最大范围，单位 uV。 */
 #ifndef APP_CARRIER_PHASE_DPLL_TRIM_LIMIT_UV
 #define APP_CARRIER_PHASE_DPLL_TRIM_LIMIT_UV 3000
@@ -155,11 +180,11 @@
 
 /*
  * 宏定义说明：APP_CARRIER_PHASE_CONTROL_POLARITY 控制相位闭环方向。
- * +1：相位控制量为正时增加 DAC，方向与已验证的 residual_freq_millihz 频率环保持一致。
- * -1：如果示波器/日志显示越调越远，只改这个宏翻转方向，不改扫频。
+ * +1：相位控制量为正时增加 DAC，方向与频率环一致。
+ * -1：相位误差为负却继续远离 90 度时使用该方向，只翻转相位环，不改扫频和频率闭环。
  */
 #ifndef APP_CARRIER_PHASE_CONTROL_POLARITY
-#define APP_CARRIER_PHASE_CONTROL_POLARITY 1
+#define APP_CARRIER_PHASE_CONTROL_POLARITY -1
 #endif
 
 /* 宏定义说明：APP_CARRIER_SYNC_PI 是相位换算使用的圆周率常量。 */
@@ -182,6 +207,7 @@ typedef struct
     uint8_t prev_phase_valid;                  /* 上一个相位误差是否有效，避免接管首个 block 误算变化率。 */
     int32_t phase_base_uv;                     /* 相位接管瞬间继承的频率闭环电压，后续相位环只在该基准附近微调。 */
     int32_t phase_trim_uv_q;                   /* 相位环内部频率修正量，单位为 uV 的 Q8 小数。 */
+    int32_t phase_residual_lpf_mhz_q;          /* 相位模式下 residual_freq_millihz 的 Q8 低通值，降低频偏估计抖动。 */
 } app_carrier_sync_ctx_t;
 
 static app_carrier_sync_ctx_t g_carrier_sync;
@@ -203,6 +229,24 @@ static int32_t app_carrier_sync_abs_i32(int32_t value)
     }
 
     return value;
+}
+
+/* 计算 int32 符号，返回 -1/0/+1，用于判断相位误差是否跨越目标。 */
+static int8_t app_carrier_sync_sign_i32(int32_t value)
+{
+    /* 判断：正数表示相位误差在目标的一侧。 */
+    if (value > 0)
+    {
+        return 1;
+    }
+
+    /* 判断：负数表示相位误差在目标的另一侧。 */
+    if (value < 0)
+    {
+        return -1;
+    }
+
+    return 0;
 }
 
 /* 把相位限制到 [-pi, pi]，避免目标 0 度附近出现正负 180 度跨越误判。 */
@@ -429,6 +473,7 @@ void app_carrier_sync_init(void)
     g_carrier_sync.status.mode = APP_CARRIER_SYNC_MODE_FREQ;
     g_carrier_sync.status.phase_lock_enabled = (APP_CARRIER_PHASE_LOCK_ENABLE != 0U) ? 1U : 0U;
     g_carrier_sync.status.phase_target_mdeg = APP_CARRIER_PHASE_TARGET_MDEG;
+    g_carrier_sync.status.phase_slew_limit_uv = APP_CARRIER_PHASE_DPLL_MAX_STEP_UV;
     /* 函数跳转：调用 app_carrier_sync_apply_uv()，把目标控制电压限幅并写到 DAC，更新当前同步状态。 */
     app_carrier_sync_apply_uv(APP_CARRIER_SYNC_CENTER_UV);
     app_carrier_sync_publish_debug_status();
@@ -451,10 +496,14 @@ void app_carrier_sync_reset_to_center(void)
     g_carrier_sync.status.phase_delta_mdeg = 0;
     g_carrier_sync.status.phase_control_mdeg = 0;
     g_carrier_sync.status.phase_delta_uv = 0;
+    g_carrier_sync.status.phase_freq_lpf_millihz = 0;
+    g_carrier_sync.status.phase_slew_limit_uv = APP_CARRIER_PHASE_DPLL_MAX_STEP_UV;
+    g_carrier_sync.status.phase_brake_count = 0U;
     g_carrier_sync.prev_phase_error_mdeg = 0;
     g_carrier_sync.prev_phase_valid = 0U;
     g_carrier_sync.phase_base_uv = APP_CARRIER_SYNC_CENTER_UV;
     g_carrier_sync.phase_trim_uv_q = 0;
+    g_carrier_sync.phase_residual_lpf_mhz_q = 0;
     /* 函数跳转：调用 osKernelGetTickCount()，读取 RTOS tick，用于记录扫频开始/结束或控制更新间隔。 */
     g_carrier_sync.last_update_tick = osKernelGetTickCount();
     g_carrier_sync.last_phase_update_tick = g_carrier_sync.last_update_tick;
@@ -517,12 +566,21 @@ static void app_carrier_sync_update_phase(uint32_t now_tick)
     int32_t desired_uv;
     int32_t delta_uv;
     int32_t next_uv;
+    int32_t residual_lpf_target_q;
+    int32_t residual_lpf_diff_q;
+    int32_t residual_lpf_mhz;
+    uint32_t slew_limit_uv;
+    int32_t previous_phase_error_mdeg;
+    int8_t previous_phase_sign;
+    int8_t current_phase_sign;
 
     /* 判断：刚从频率闭环切入相位闭环时，继承当前 DAC 电压作为相位环基准，不回中心也不突跳。 */
     if (g_carrier_sync.status.phase_takeover == 0U)
     {
         g_carrier_sync.phase_base_uv = g_carrier_sync.status.control_uv;
         g_carrier_sync.phase_trim_uv_q = 0;
+        g_carrier_sync.phase_residual_lpf_mhz_q =
+            g_carrier_sync.status.residual_freq_millihz * APP_CARRIER_PHASE_DPLL_FRAC_SCALE;
         g_carrier_sync.prev_phase_valid = 0U;
     }
 
@@ -542,12 +600,14 @@ static void app_carrier_sync_update_phase(uint32_t now_tick)
         return;
     }
 
+    previous_phase_error_mdeg = g_carrier_sync.prev_phase_error_mdeg;
+
     /* 判断：已有上一个有效相位时，计算相邻 block 的相位变化率；首次进入相位模式时变化率置 0。 */
     if (g_carrier_sync.prev_phase_valid != 0U)
     {
         g_carrier_sync.status.phase_delta_mdeg =
             app_carrier_sync_wrap_mdeg(g_carrier_sync.status.phase_error_mdeg -
-                                       g_carrier_sync.prev_phase_error_mdeg);
+                                       previous_phase_error_mdeg);
     }
     else
     {
@@ -558,6 +618,14 @@ static void app_carrier_sync_update_phase(uint32_t now_tick)
 
     abs_phase_mdeg = app_carrier_sync_abs_i32(g_carrier_sync.status.phase_error_mdeg);
     abs_delta_mdeg = app_carrier_sync_abs_i32(g_carrier_sync.status.phase_delta_mdeg);
+
+    residual_lpf_target_q = g_carrier_sync.status.residual_freq_millihz *
+                            APP_CARRIER_PHASE_DPLL_FRAC_SCALE;
+    residual_lpf_diff_q = residual_lpf_target_q - g_carrier_sync.phase_residual_lpf_mhz_q;
+    g_carrier_sync.phase_residual_lpf_mhz_q +=
+        residual_lpf_diff_q / (int32_t)(1UL << APP_CARRIER_PHASE_RESIDUAL_LPF_SHIFT);
+    residual_lpf_mhz = g_carrier_sync.phase_residual_lpf_mhz_q / APP_CARRIER_PHASE_DPLL_FRAC_SCALE;
+    g_carrier_sync.status.phase_freq_lpf_millihz = residual_lpf_mhz;
 
     /* 判断：相位误差和相位变化率都落入死区时保持当前 DAC，不反复抖动。 */
     if ((abs_phase_mdeg <= APP_CARRIER_PHASE_DEADBAND_MDEG) &&
@@ -578,9 +646,27 @@ static void app_carrier_sync_update_phase(uint32_t now_tick)
     }
     g_carrier_sync.last_phase_update_tick = now_tick;
 
+    previous_phase_sign = app_carrier_sync_sign_i32(previous_phase_error_mdeg);
+    current_phase_sign = app_carrier_sync_sign_i32(g_carrier_sync.status.phase_error_mdeg);
+
+    /*
+     * 判断：相位误差在 90 度目标附近发生正负跨越时，说明已经冲过目标。
+     * 此时衰减内部 trim，相当于给 OCXO 频率偏置踩刹车，避免旧偏置继续推着相位转圈。
+     */
+    if ((g_carrier_sync.prev_phase_valid != 0U) &&
+        (previous_phase_sign != 0) &&
+        (current_phase_sign != 0) &&
+        (previous_phase_sign != current_phase_sign) &&
+        (abs_phase_mdeg <= APP_CARRIER_PHASE_CROSS_BRAKE_MDEG))
+    {
+        g_carrier_sync.phase_trim_uv_q =
+            (g_carrier_sync.phase_trim_uv_q * APP_CARRIER_PHASE_CROSS_DAMP_PM) / 1000;
+        g_carrier_sync.status.phase_brake_count++;
+    }
+
     control_mdeg = g_carrier_sync.status.phase_error_mdeg +
                    (APP_CARRIER_PHASE_DPLL_RATE_LEAD * g_carrier_sync.status.phase_delta_mdeg) +
-                   (APP_CARRIER_PHASE_DPLL_RESIDUAL_GAIN * g_carrier_sync.status.residual_freq_millihz);
+                   (APP_CARRIER_PHASE_DPLL_RESIDUAL_GAIN * residual_lpf_mhz);
     trim_step_q = APP_CARRIER_PHASE_CONTROL_POLARITY *
                   ((control_mdeg * APP_CARRIER_PHASE_DPLL_FRAC_SCALE) /
                    APP_CARRIER_PHASE_DPLL_INTEGRAL_SCALE_MDEG_PER_UV);
@@ -608,16 +694,25 @@ static void app_carrier_sync_update_phase(uint32_t now_tick)
     desired_uv = g_carrier_sync.phase_base_uv +
                  (g_carrier_sync.phase_trim_uv_q / APP_CARRIER_PHASE_DPLL_FRAC_SCALE);
     delta_uv = desired_uv - g_carrier_sync.status.control_uv;
+    slew_limit_uv = APP_CARRIER_PHASE_DPLL_MAX_STEP_UV;
+
+    /* 判断：相位误差已经进入目标近区时，把本次最大步进降到 1uV，防止接近目标后继续大步越过。 */
+    if ((abs_phase_mdeg <= APP_CARRIER_PHASE_NEAR_BAND_MDEG) &&
+        (APP_CARRIER_PHASE_NEAR_MAX_STEP_UV < slew_limit_uv))
+    {
+        slew_limit_uv = APP_CARRIER_PHASE_NEAR_MAX_STEP_UV;
+    }
+    g_carrier_sync.status.phase_slew_limit_uv = slew_limit_uv;
 
     /* 判断：相位 DPLL 希望的本次 DAC 正向变化过大时限幅，避免相位接近目标后被一次拉过头。 */
-    if (delta_uv > APP_CARRIER_PHASE_DPLL_MAX_STEP_UV)
+    if (delta_uv > (int32_t)slew_limit_uv)
     {
-        delta_uv = APP_CARRIER_PHASE_DPLL_MAX_STEP_UV;
+        delta_uv = (int32_t)slew_limit_uv;
     }
     /* 判断：相位 DPLL 希望的本次 DAC 负向变化过大时限幅，避免反向一次拉过头。 */
-    else if (delta_uv < -APP_CARRIER_PHASE_DPLL_MAX_STEP_UV)
+    else if (delta_uv < -(int32_t)slew_limit_uv)
     {
-        delta_uv = -APP_CARRIER_PHASE_DPLL_MAX_STEP_UV;
+        delta_uv = -(int32_t)slew_limit_uv;
     }
 
     next_uv = g_carrier_sync.status.control_uv + delta_uv;

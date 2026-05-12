@@ -275,6 +275,21 @@ void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status)
     {
         print_queue_send_log(line);
     }
+
+    /* 函数跳转：调用 snprintf()，输出第三条相位闭环调试日志，观察 residual 低通、近区限速和跨越制动次数。 */
+    n = snprintf(line,
+                 sizeof(line),
+                 "carx,fl=%ld,lim=%lu,br=%lu,pc=%lu,fc=%lu\r\n",
+                 (long)status->phase_freq_lpf_millihz,
+                 (unsigned long)status->phase_slew_limit_uv,
+                 (unsigned long)status->phase_brake_count,
+                 (unsigned long)status->phase_update_count,
+                 (unsigned long)status->freq_update_count);
+    /* 判断：格式化成功且没有截断时才送入日志队列，避免串口出现半行数据。 */
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+        print_queue_send_log(line);
+    }
 }
 
 void app_adc_log_iq_preproc_1s(uint8_t tracking_active,
