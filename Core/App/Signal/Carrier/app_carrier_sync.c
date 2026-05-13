@@ -441,7 +441,6 @@ void app_carrier_sync_update_iq(uint8_t locked_gate,
 {
     uint32_t now_tick;
     int32_t residual;
-    int32_t abs_residual;
 
     /* 判断：载波同步被宏或状态关闭时直接退出，不改 DAC。 */
     if ((APP_CARRIER_SYNC_ENABLE == 0U) || (g_carrier_sync.status.enabled == 0U))
@@ -468,20 +467,12 @@ void app_carrier_sync_update_iq(uint8_t locked_gate,
 
     now_tick = osKernelGetTickCount();
     residual = iq_result->residual_freq_millihz;
-    abs_residual = app_carrier_sync_abs_i32(residual);
     g_carrier_sync.status.locked_gate = 1U;
     g_carrier_sync.status.residual_freq_millihz = residual;
     g_carrier_sync.status.phase_lock_enabled = (APP_CARRIER_PHASE_LOCK_ENABLE != 0U) ? 1U : 0U;
     g_carrier_sync.status.phase_target_mdeg = APP_CARRIER_PHASE_TARGET_MDEG;
 
     /* 判断：相位闭环关闭时，完全保持原来的频率闭环行为。 */
-    if (APP_CARRIER_PHASE_LOCK_ENABLE == 0U)
-    {
-        g_carrier_sync.status.mode = APP_CARRIER_SYNC_MODE_FREQ;
-        app_carrier_sync_update_frequency(now_tick, iq_result);
-        return;
-    }
-
     g_carrier_sync.status.phase_valid =
         app_carrier_sync_calc_point_phase(i_buf,
                                           q_buf,
@@ -493,12 +484,9 @@ void app_carrier_sync_update_iq(uint8_t locked_gate,
                                            &g_carrier_sync.status.phase_used_count,
                                            &g_carrier_sync.status.phase_resultant_pm);
 
-    (void)abs_residual;
     g_carrier_sync.status.mode = APP_CARRIER_SYNC_MODE_FREQ;
     g_carrier_sync.status.phase_takeover = 0U;
     g_carrier_sync.status.phase_allow_update = 0U;
-    g_carrier_sync.status.phase_target_residual_millihz = 0;
-    g_carrier_sync.status.phase_residual_error_millihz = residual;
     app_carrier_sync_update_frequency(now_tick, iq_result);
 }
 
