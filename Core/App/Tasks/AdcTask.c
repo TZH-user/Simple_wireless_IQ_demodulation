@@ -5,7 +5,7 @@
 #include "adc.h"
 #include "tim.h"
 #include "app_adc_log.h"
-#include "app_signal_detect.h"
+#include "app_signal_pipeline.h"
 #include "AppDebugConfig.h"
 #include <stdio.h>
 #include "RtosTypes.h"
@@ -15,11 +15,18 @@
 #define ADC_CLIP_HIGH           16373U                  /* 16383 - 10 */
 #define ADC_FS_MAX              16383U                  /* 14-bit ADC 的最大码值 */
 
+/*
+    * ADC 数据转换：
+        - 输入：ADC 原始码值（0 到 16383）
+        - 输出：电压值，单位为 0.0001 V（即 1e-4 V），范围约为 0 到 3.3000 V
+        - 计算方法：电压 = (原始码值 / 16383) * 3.3 V
+*/
 static uint32_t adc_raw_to_v_1e4(uint16_t raw)
 {
     return (uint32_t)((((uint64_t)raw * 33000ULL) + (ADC_FS_MAX / 2U)) / ADC_FS_MAX);
 }
 
+/* ADC DMA与时钟开启并复位采样完成标志位 */
 static void adc_start_stream(void)
 {
     adc1_half_ready = 0U;
@@ -44,17 +51,24 @@ static void adc_start_stream(void)
     }
 }
 
+/* 使能 ADC DMA 中断并在 ISR 中设置就绪标志位；ADC 任务通过检查这些标志位来处理新的数据块。 */
 static inline void adc_invalidate_block_cache(uint32_t start_index)
 {
-#if (__DCACHE_PRESENT == 1U)
+#if (__DCACHE_PRESENT == 1U)    /* 条件编译判断：如果处理器支持数据缓存 */
     const int32_t bytes = (int32_t)(ADC_BLOCK_N * sizeof(uint16_t));
     SCB_InvalidateDCache_by_Addr((uint32_t *)&adc1_buf[start_index], bytes);
     SCB_InvalidateDCache_by_Addr((uint32_t *)&adc2_buf[start_index], bytes);
-#else
+#else                           /* 如果没有数据缓存，函数不执行任何操作。 */
     (void)start_index;
 #endif
 }
 
+/*
+    * 将 ADC 数据块发布到消息队列
+        - 输入：块起始索引（0 或 ADC_BLOCK_N）
+        - 处理：调用 adc转换函数后将数据转换到串口输出格式，分批次放入消息队列
+        - 输出：无直接返回值，但会将格式化的电压数据发送到 UART 输出任务。
+*/
 static void adc_publish_block_to_queue(uint32_t start_index)
 {
     print_msg_t msg;
@@ -76,12 +90,12 @@ static void adc_publish_block_to_queue(uint32_t start_index)
                      adc2_v_1e4 / 10000UL,
                      adc2_v_1e4 % 10000UL);
 
-        if ((n <= 0) || ((size_t)n >= (sizeof(msg.data) - msg.len)))
+        if ((n <= 0) || ((size_t)n >= (sizeof(msg.data) - msg.len)))    /* 如果 snprintf 失败或缓冲区不足，发送完当前数据再继续填充 */
         {
             osMessageQueuePut(PrintQueueHandle, &msg, 0U, osWaitForever);
             msg.len = 0U;
 
-            n = snprintf(&msg.data[msg.len],
+            n = snprintf(&msg.data[msg.len], 
                          sizeof(msg.data) - msg.len,
                          "%lu.%04lu,%lu.%04lu\n",
                          adc1_v_1e4 / 10000UL,
@@ -89,7 +103,7 @@ static void adc_publish_block_to_queue(uint32_t start_index)
                          adc2_v_1e4 / 10000UL,
                          adc2_v_1e4 % 10000UL);
 
-            if ((n <= 0) || ((size_t)n >= sizeof(msg.data)))
+            if ((n <= 0) || ((size_t)n >= sizeof(msg.data)))            /* 如果再次 snprintf 失败，丢弃这个数据点继续循环。 */
             {
                 continue;
             }
@@ -98,20 +112,21 @@ static void adc_publish_block_to_queue(uint32_t start_index)
         msg.len += (uint16_t)n;
     }
 
-    if (msg.len > 0U)
+    if (msg.len > 0U)                                                   /* 发送剩余数据 */
     {
         osMessageQueuePut(PrintQueueHandle, &msg, 0U, osWaitForever);
     }
 }
 
-static uint32_t  adc_range_sample_cnt;
-static uint16_t adc_range_i_min, adc_range_i_max;
-static uint16_t adc_range_q_min, adc_range_q_max;
-static uint32_t adc_range_i_clip_lo, adc_range_i_clip_hi;
-static uint32_t adc_range_q_clip_lo, adc_range_q_clip_hi;
-static uint32_t adc_range_i_near_lo, adc_range_i_near_hi;
-static uint32_t adc_range_q_near_lo, adc_range_q_near_hi;
+static uint32_t  adc_range_sample_cnt;                          /* 累积的 ADC 样本总数，用于统计范围日志的时间窗口。 */
+static uint16_t adc_range_i_min, adc_range_i_max;               /* I 通道的最小和最大码值，用于统计范围日志的动态范围。 */
+static uint16_t adc_range_q_min, adc_range_q_max;               /* Q 通道的最小和最大码值，用于统计范围日志的动态范围。 */
+static uint32_t adc_range_i_clip_lo, adc_range_i_clip_hi;       /* I 通道的低/高 clipping 计数，用于统计范围日志的 clipping 频率。 */
+static uint32_t adc_range_q_clip_lo, adc_range_q_clip_hi;       /* Q 通道的低/高 clipping 计数，用于统计范围日志的 clipping 频率。 */
+static uint32_t adc_range_i_near_lo, adc_range_i_near_hi;       /* I 通道的接近下/上电源轨计数，用于统计范围日志的接近电源轨频率。 */
+static uint32_t adc_range_q_near_lo, adc_range_q_near_hi;       /* Q 通道的接近下/上电源轨计数，用于统计范围日志的接近电源轨频率。 */
 
+/* 重置 ADC 范围统计变量，用于开始新的统计窗口。 */
 static void adc_range_reset(void)
 {
     adc_range_sample_cnt  = 0U;
@@ -123,42 +138,74 @@ static void adc_range_reset(void)
     adc_range_q_near_lo = 0U; adc_range_q_near_hi = 0U;
 }
 
+/* 
+    * 累积 ADC 范围统计变量，用于更新统计窗口。
+        - 输入：I/Q 数据块和块大小
+        - 处理：遍历数据块更新最小/最大值，统计 clipping 和接近电源轨的样本数
+        - 输出：无直接返回值，但会更新全局统计变量以供范围日志使用。
+*/
 static void adc_range_accum(const uint16_t *i_buf, const uint16_t *q_buf, uint32_t block_n)
 {
+    uint16_t i_min = adc_range_i_min;
+    uint16_t i_max = adc_range_i_max;
+    uint16_t q_min = adc_range_q_min;
+    uint16_t q_max = adc_range_q_max;
+    uint32_t i_clip_lo = adc_range_i_clip_lo;
+    uint32_t i_clip_hi = adc_range_i_clip_hi;
+    uint32_t q_clip_lo = adc_range_q_clip_lo;
+    uint32_t q_clip_hi = adc_range_q_clip_hi;
+    uint32_t i_near_lo = adc_range_i_near_lo;
+    uint32_t i_near_hi = adc_range_i_near_hi;
+    uint32_t q_near_lo = adc_range_q_near_lo;
+    uint32_t q_near_hi = adc_range_q_near_hi;
+    const uint16_t near_high = (uint16_t)(ADC_FS_MAX - ADC_NEAR_RAIL_DELTA);
+
     for (uint32_t i = 0U; i < block_n; i++)
     {
         uint16_t iv = i_buf[i];
         uint16_t qv = q_buf[i];
 
-        if (iv < adc_range_i_min) adc_range_i_min = iv;
-        if (iv > adc_range_i_max) adc_range_i_max = iv;
-        if (qv < adc_range_q_min) adc_range_q_min = qv;
-        if (qv > adc_range_q_max) adc_range_q_max = qv;
+        if (iv < i_min) i_min = iv;
+        if (iv > i_max) i_max = iv;
+        if (qv < q_min) q_min = qv;
+        if (qv > q_max) q_max = qv;
 
-        if (iv <= ADC_CLIP_LOW)  adc_range_i_clip_lo++;
-        if (iv >= ADC_CLIP_HIGH) adc_range_i_clip_hi++;
-        if (qv <= ADC_CLIP_LOW)  adc_range_q_clip_lo++;
-        if (qv >= ADC_CLIP_HIGH) adc_range_q_clip_hi++;
+        if (iv <= ADC_CLIP_LOW)  i_clip_lo++;
+        if (iv >= ADC_CLIP_HIGH) i_clip_hi++;
+        if (qv <= ADC_CLIP_LOW)  q_clip_lo++;
+        if (qv >= ADC_CLIP_HIGH) q_clip_hi++;
 
-        if (iv <= ADC_NEAR_RAIL_DELTA)            adc_range_i_near_lo++;
-        if (iv >= (ADC_FS_MAX - ADC_NEAR_RAIL_DELTA)) adc_range_i_near_hi++;
-        if (qv <= ADC_NEAR_RAIL_DELTA)            adc_range_q_near_lo++;
-        if (qv >= (ADC_FS_MAX - ADC_NEAR_RAIL_DELTA)) adc_range_q_near_hi++;
+        if (iv <= ADC_NEAR_RAIL_DELTA) i_near_lo++;
+        if (iv >= near_high)           i_near_hi++;
+        if (qv <= ADC_NEAR_RAIL_DELTA) q_near_lo++;
+        if (qv >= near_high)           q_near_hi++;
     }
 
+    adc_range_i_min = i_min;
+    adc_range_i_max = i_max;
+    adc_range_q_min = q_min;
+    adc_range_q_max = q_max;
+    adc_range_i_clip_lo = i_clip_lo;
+    adc_range_i_clip_hi = i_clip_hi;
+    adc_range_q_clip_lo = q_clip_lo;
+    adc_range_q_clip_hi = q_clip_hi;
+    adc_range_i_near_lo = i_near_lo;
+    adc_range_i_near_hi = i_near_hi;
+    adc_range_q_near_lo = q_near_lo;
+    adc_range_q_near_hi = q_near_hi;
     adc_range_sample_cnt += block_n;
 }
 
+/* ADC 任务主循环：等待 ADC 数据块就绪，处理数据块，更新统计，并可选地将数据发送到 UART 输出。 */
 void StartAdcTask(void *argument)
 {
     (void)argument;
     adc_start_stream();
-    app_signal_detect_init();
+    app_signal_pipeline_init();
     adc_range_reset();
 
     for (;;)
     {
-        app_signal_detect_status_t adc_sig_log_status;
         app_adc_log_health_snapshot_t health_snapshot;
         app_adc_log_range_snapshot_t range_snapshot;
 
@@ -189,11 +236,11 @@ void StartAdcTask(void *argument)
             }
             __set_PRIMASK(primask); /* 离开临界区 */
 
-            if (block_flag == 0U)   break;
+            if (block_flag == 0U)   break;                  /* 没有块就绪，退出等待 */
 
-            adc_invalidate_block_cache(start_index);        /* 块准备好了；在接触新的DMA样本之前使DCache失效。 */
+            adc_invalidate_block_cache(start_index);        /* 块准备好了；使DCache失效。 */
             if (ADC_RANGE_LOG_ENABLE != 0U)
-            {
+            {   /* 统计adc数据范围 */
                 adc_range_accum(&adc1_buf[start_index], &adc2_buf[start_index], ADC_BLOCK_N);
             }
 
@@ -211,7 +258,7 @@ void StartAdcTask(void *argument)
 
         }
 
-        {
+        {   /* 关闭中断抢断，并记录健康状态（任务处理实时性） */
             uint32_t primask = __get_PRIMASK();
             __disable_irq();
             health_snapshot.pending_mask = adc_block_ready_mask;
@@ -222,11 +269,9 @@ void StartAdcTask(void *argument)
             health_snapshot.overrun = adc_overrun_cnt;
             __set_PRIMASK(primask);
         }
-        app_adc_log_health_1s(&health_snapshot);
+        app_adc_log_health_1s(&health_snapshot);                    /* 任务实时性报告 */
 
-        app_signal_detect_get_status(&adc_sig_log_status);
-        app_adc_log_algo_1s(&adc_sig_log_status);
-
+        /* 如果启用了范围日志功能，则填充范围快照结构并记录范围日志；日志函数内部会根据时间窗口自动重置统计。 */
         range_snapshot.sample_cnt = adc_range_sample_cnt;
         range_snapshot.i_min = adc_range_i_min;
         range_snapshot.i_max = adc_range_i_max;
@@ -240,6 +285,8 @@ void StartAdcTask(void *argument)
         range_snapshot.i_near_hi = adc_range_i_near_hi;
         range_snapshot.q_near_lo = adc_range_q_near_lo;
         range_snapshot.q_near_hi = adc_range_q_near_hi;
+
+        /* 记录范围日志，并在日志函数内部判断是否需要重置统计窗口。 */
         if (app_adc_log_range_1s(&range_snapshot) != 0U)
         {
             adc_range_reset();

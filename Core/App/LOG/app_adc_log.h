@@ -2,9 +2,10 @@
 #define APP_ADC_LOG_H
 
 #include <stdint.h>
-#include "app_signal_detect.h"
-#include "app_iq_preproc.h"
+
 #include "app_carrier_sync.h"
+#include "app_iq_preproc.h"
+#include "app_signal_status.h"
 
 typedef struct
 {
@@ -49,14 +50,18 @@ typedef struct
 
 void app_adc_log_health_1s(const app_adc_log_health_snapshot_t *snapshot);
 void app_adc_log_algo_1s(const app_signal_detect_status_t *sig);
-/* 函数说明：频率锁定后每秒输出 I/Q 两路幅度和由 atan2(Q,I) 得到的相位，供串口调试观察。 */
+
+/* 频率锁定后输出 I/Q 幅度和由 atan2(Q,I) 计算的绝对相位。 */
 void app_adc_log_iq_amp_phase_1s(uint8_t tracking_active,
                                  const app_iq_preproc_result_t *result);
+
 void app_adc_log_iq_preproc_1s(uint8_t tracking_active,
                                const app_iq_preproc_result_t *result,
                                const app_adc_log_iq_verify_snapshot_t *verify);
-/* 函数说明：每秒输出 VRFE 当前闭环模式、电压、频偏、逐点相位误差和相位接管状态。 */
+
+/* 输出 VRFE 频率闭环状态和逐点相位观测结果。 */
 void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status);
+
 uint8_t app_adc_log_range_1s(const app_adc_log_range_snapshot_t *snapshot);
 
 #endif /* APP_ADC_LOG_H */

@@ -100,6 +100,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 
     Core/App/Tasks/ModDetectTask.c
     Core/App/Signal/app_signal_detect.c
+    Core/App/Signal/Pipeline/app_signal_pipeline.c
+    Core/App/Signal/Iq/app_signal_iq_track.c
     Core/App/Signal/Sweep/app_signal_sweep.c
     Core/App/Signal/Carrier/app_carrier_sync.c
     Core/App/Signal/app_iq_preproc.c
@@ -117,12 +119,15 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
     Core/App/SI5351/Config    
     Core/App/SI5351/Port    
+    Core/App/SI5351/Wrapper
     Core/App/SI5351/Legacy/common    
     Core/App/SI5351/Legacy/basic    
     Core/App/SI5351/Legacy/pro    
     Core/App/SI5351/Legacy/promax
 
     Core/App/Signal
+    Core/App/Signal/Pipeline
+    Core/App/Signal/Iq
     Core/App/Signal/Sweep
     Core/App/Signal/Carrier
     Core/App/LOG

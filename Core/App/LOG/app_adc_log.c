@@ -1,25 +1,27 @@
 #include "app_adc_log.h"
-#include "cmsis_os2.h"
-#include "FreeRTOS.h"
-#include "task.h"
-#include "AppDebugConfig.h"
-#include "RtosTypes.h"
+
 #include <math.h>
 #include <stdio.h>
+
+#include "AppDebugConfig.h"
+#include "FreeRTOS.h"
+#include "RtosTypes.h"
+#include "cmsis_os2.h"
+#include "task.h"
 
 #define APP_ADC_LOG_PERIOD_MS        1000U
 #define APP_ADC_IQ_PREPROC_LOG_MS    1000U
 
-/* 宏定义说明：APP_ADC_CARRIER_SYNC_LOG_MS = 100U；相位闭环调试阶段每 100ms 输出一次 carrier 状态，便于观察 DPLL 动态。 */
-/* 宏定义说明：APP_ADC_CARRIER_SYNC_LOG_MS 当前配置为 50U；配合 1.5Mbit 串口提高相位接管诊断密度。 */
+/* 宏定义说明：APP_ADC_CARRIER_SYNC_LOG_MS = 1000U；当前只保留频率闭环和相位观测，carrier 日志恢复为 1s 输出。 */
 #ifndef APP_ADC_CARRIER_SYNC_LOG_MS
-#define APP_ADC_CARRIER_SYNC_LOG_MS 50U
+#define APP_ADC_CARRIER_SYNC_LOG_MS 1000U
 #endif
 
-/* 宏定义说明：APP_ADC_IQ_AMP_PHASE_LOG_MS = 1000U；锁定后 I/Q 幅度和 atan2(Q,I) 相位日志的最小输出周期。 */
-#define APP_ADC_IQ_AMP_PHASE_LOG_MS  1000U
-/* 宏定义说明：APP_ADC_LOG_RAD_TO_MDEG = 57295.7795f；弧度到毫度的换算系数，便于串口直接观察角度。 */
-#define APP_ADC_LOG_RAD_TO_MDEG      57295.7795f
+/* 宏定义说明：APP_ADC_IQ_AMP_PHASE_LOG_MS = 1000U；锁定后 I/Q 幅度和绝对相位日志的最小输出周期。 */
+#define APP_ADC_IQ_AMP_PHASE_LOG_MS 1000U
+
+/* 宏定义说明：APP_ADC_LOG_RAD_TO_MDEG = 57295.7795f；弧度转毫度换算系数。 */
+#define APP_ADC_LOG_RAD_TO_MDEG 57295.7795f
 
 #ifndef ADC_IQ_PREPROC_LOG_ENABLE
 #define ADC_IQ_PREPROC_LOG_ENABLE ADC_ALGO_LOG_ENABLE
@@ -130,15 +132,12 @@ void app_adc_log_iq_amp_phase_1s(uint8_t tracking_active,
     char line[180];
     int n;
 
-    /* 判断：日志开关关闭或结果指针为空时直接退出，避免未锁定/未分析状态下访问无效数据。 */
     if ((ADC_IQ_PREPROC_LOG_ENABLE == 0U) || (result == NULL))
     {
         return;
     }
 
-    /* 函数跳转：调用 osKernelGetTickCount()，读取 RTOS tick，用于限制该观测日志每秒只输出一次。 */
     now_tick = osKernelGetTickCount();
-    /* 判断：距离上次输出不足 1 秒时直接退出，避免串口刷屏影响 ADC 实时性。 */
     if ((last_log_tick != 0U) &&
         ((uint32_t)(now_tick - last_log_tick) < APP_ADC_IQ_AMP_PHASE_LOG_MS))
     {
@@ -146,7 +145,6 @@ void app_adc_log_iq_amp_phase_1s(uint8_t tracking_active,
     }
     last_log_tick = now_tick;
 
-    /* 判断：串口不是日志模式或频率锁定跟踪未打开时退出，保证只在频率锁定后输出 IQ 观测量。 */
     if ((g_uart_mode != UART_MODE_LOG) || (tracking_active == 0U))
     {
         return;
@@ -154,12 +152,10 @@ void app_adc_log_iq_amp_phase_1s(uint8_t tracking_active,
 
     i_amp = (result->mean_i >= 0) ? result->mean_i : -result->mean_i;
     q_amp = (result->mean_q >= 0) ? result->mean_q : -result->mean_q;
-    /* 函数跳转：调用 atan2f()，用去中心后的 Q/I 重心计算绝对相位，目标定义为 atan2(Q,I)。 */
     phase_rad = atan2f((float)result->mean_q, (float)result->mean_i);
     phase_mdeg = (int32_t)(phase_rad * APP_ADC_LOG_RAD_TO_MDEG);
     phase_mdeg_abs = (phase_mdeg >= 0) ? phase_mdeg : -phase_mdeg;
 
-    /* 函数跳转：调用 snprintf()，把 I/Q 幅度和相位整理成一行串口日志。 */
     n = snprintf(line,
                  sizeof(line),
                  "iq_amp,i_amp=%ld,q_amp=%ld,i_mean=%ld,q_mean=%ld,mag=%lu,ph_urad=%ld,ph_mdeg=%ld,ph_deg=%s%ld.%03ld,blk=%lu\r\n",
@@ -174,33 +170,18 @@ void app_adc_log_iq_amp_phase_1s(uint8_t tracking_active,
                  (long)(phase_mdeg_abs / 1000),
                  (long)(phase_mdeg_abs % 1000),
                  (unsigned long)result->block_count);
-    /* 判断：格式化成功且没有截断时才送入打印队列，避免输出半行日志干扰解析。 */
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {
-        /* 函数跳转：调用 print_queue_send_log()，把格式化后的日志文本送入打印队列，最终由串口任务输出。 */
         print_queue_send_log(line);
     }
 }
 
-/* 把闭环模式数值转换成短文本，便于串口日志直接判断当前是否相位接管。 */
+/* 把载波同步模式转成短文本，便于串口快速观察。 */
 static const char *app_adc_log_carrier_mode_name(uint8_t mode)
 {
-    /* 判断：当前仍由 residual_freq_millihz 驱动 VRFE。 */
     if (mode == APP_CARRIER_SYNC_MODE_FREQ)
     {
         return "freq";
-    }
-
-    /* 判断：频率已锁定，正在等待连续稳定计数达到相位接管门限。 */
-    if (mode == APP_CARRIER_SYNC_MODE_PHASE_WAIT)
-    {
-        return "phase_wait";
-    }
-
-    /* 判断：相位环已经接管 VRFE 微调。 */
-    if (mode == APP_CARRIER_SYNC_MODE_PHASE_LOCK)
-    {
-        return "phase_lock";
     }
 
     return "unknown";
@@ -215,15 +196,12 @@ void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status)
     char line[125];
     int n;
 
-    /* 判断：日志开关关闭或状态指针为空时直接退出，避免访问无效状态。 */
     if ((ADC_IQ_PREPROC_LOG_ENABLE == 0U) || (status == NULL))
     {
         return;
     }
 
-    /* 函数跳转：调用 osKernelGetTickCount()，读取 RTOS tick，用于限制 carrier 日志每秒输出一次。 */
     now_tick = osKernelGetTickCount();
-    /* 判断：距离上次输出不足调试周期时退出，避免闭环调试日志挤占串口。 */
     if ((last_log_tick != 0U) &&
         ((uint32_t)(now_tick - last_log_tick) < APP_ADC_CARRIER_SYNC_LOG_MS))
     {
@@ -231,7 +209,6 @@ void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status)
     }
     last_log_tick = now_tick;
 
-    /* 判断：串口不是日志模式时不输出，避免影响 VOFA 数据流。 */
     if (g_uart_mode != UART_MODE_LOG)
     {
         return;
@@ -240,72 +217,36 @@ void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status)
     phase_mdeg_abs = (status->phase_error_mdeg >= 0) ? status->phase_error_mdeg : -status->phase_error_mdeg;
     phase_abs_mdeg_abs = (status->phase_abs_mdeg >= 0) ? status->phase_abs_mdeg : -status->phase_abs_mdeg;
 
-    /* 函数跳转：调用 snprintf()，输出第一条短日志，避免超过 print_msg_t 的 125 字节队列载荷。 */
     n = snprintf(line,
                  sizeof(line),
-                 "car,m=%s,en=%u,lk=%u,pt=%u,pv=%u,pu=%u,rf=%ld,uv=%ld,dc=%u\r\n",
+                 "car,m=%s,lk=%u,rf=%ld,uv=%ld,dc=%u,dcd=%d,chg=%u,fc=%lu,hc=%lu\r\n",
                  app_adc_log_carrier_mode_name(status->mode),
-                 (unsigned)status->phase_lock_enabled,
                  (unsigned)status->locked_gate,
-                 (unsigned)status->phase_takeover,
-                 (unsigned)status->phase_valid,
-                 (unsigned)status->phase_allow_update,
                  (long)status->residual_freq_millihz,
-                  (long)status->control_uv,
-                  (unsigned)status->dac_code);
-    /* 判断：格式化成功且没有截断时才送入日志队列，避免串口出现半行数据。 */
+                 (long)status->control_uv,
+                 (unsigned)status->dac_code,
+                 (int)status->dac_code_delta,
+                 (unsigned)status->dac_code_changed,
+                 (unsigned long)status->freq_update_count,
+                 (unsigned long)status->hold_count);
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {
         print_queue_send_log(line);
     }
 
-    /* 函数跳转：调用 snprintf()，输出第二条短日志，集中给出相位误差和圆均值质量。 */
     n = snprintf(line,
                  sizeof(line),
-                 "carp,ph=%s%ld.%03ld,tg=%ld,er=%s%ld.%03ld,de=%ld,fz=%u,dir=%d\r\n",
+                 "carp,pv=%u,ph=%s%ld.%03ld,er=%s%ld.%03ld,u=%lu,rel=%lu,le=%ld\r\n",
+                 (unsigned)status->phase_valid,
                  (status->phase_abs_mdeg < 0) ? "-" : "",
                  (long)(phase_abs_mdeg_abs / 1000),
                  (long)(phase_abs_mdeg_abs % 1000),
-                 (long)status->phase_target_mdeg,
                  (status->phase_error_mdeg < 0) ? "-" : "",
                  (long)(phase_mdeg_abs / 1000),
                  (long)(phase_mdeg_abs % 1000),
-                 (long)status->phase_delta_mdeg,
-                 (unsigned)status->phase_far_zone,
-                 (int)status->phase_direction_hold);
-    /* 判断：格式化成功且没有截断时才送入日志队列，避免串口出现半行数据。 */
-    if ((n > 0) && ((size_t)n < sizeof(line)))
-    {
-        print_queue_send_log(line);
-    }
-
-    /* 函数跳转：调用 snprintf()，输出第三条相位闭环调试日志，观察 residual 低通、近区限速和跨越制动次数。 */
-    n = snprintf(line,
-                 sizeof(line),
-                 "carx,fl=%ld,tr=%ld,re=%ld,du=%ld,dcd=%d,chg=%u,st=%lu\r\n",
-                 (long)status->phase_freq_lpf_millihz,
-                  (long)status->phase_target_residual_millihz,
-                  (long)status->phase_residual_error_millihz,
-                  (long)status->phase_delta_uv,
-                  (int)status->dac_code_delta,
-                  (unsigned)status->dac_code_changed,
-                  (unsigned long)status->phase_stable_count);
-    /* 判断：格式化成功且没有截断时才送入日志队列，避免串口出现半行数据。 */
-    if ((n > 0) && ((size_t)n < sizeof(line)))
-    {
-        print_queue_send_log(line);
-    }
-
-    /* 函数跳转：调用 snprintf()，输出第四条测量质量日志，确认相位有效点数和圆均值可靠度是否支持闭环判断。 */
-    n = snprintf(line,
-                 sizeof(line),
-                 "carq,u=%lu,rel=%lu,pc=%lu,fc=%lu,le=%ld\r\n",
                  (unsigned long)status->phase_used_count,
                  (unsigned long)status->phase_resultant_pm,
-                 (unsigned long)status->phase_update_count,
-                 (unsigned long)status->freq_update_count,
                  (long)status->last_error);
-    /* 判断：格式化成功且没有截断时才送入日志队列，避免串口出现半行数据。 */
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {
         print_queue_send_log(line);
