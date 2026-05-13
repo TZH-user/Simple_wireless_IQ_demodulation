@@ -62,6 +62,13 @@ typedef struct
     int32_t phase_freq_lpf_millihz;   /* 相位接管后 residual_freq_millihz 的低通结果，单位 mHz，用于判断频率是否仍在慢漂。 */
     uint32_t phase_slew_limit_uv;      /* 当前相位 DPLL 实际采用的单次最大步进，单位 uV，近目标时会自动减小。 */
     uint32_t phase_brake_count;        /* 相位误差跨越目标后触发内部 trim 衰减的次数，用于确认是否进入减速保护。 */
+    int32_t phase_abs_mdeg;           /* 当前逐点圆均值得到的绝对相位，单位毫度；0 度表示 +I 轴。 */
+    int32_t phase_target_residual_millihz; /* 相位环希望制造的目标残余频偏，单位 mHz；用于让相位慢速回到目标角。 */
+    int32_t phase_residual_error_millihz;  /* residual 低通值减去目标 residual 后的误差，单位 mHz；用于驱动 DAC 追踪目标频偏。 */
+    uint8_t phase_far_zone;            /* 1 表示当前相位处于 ±180 度远区，方向采用保持策略防止跳变抖动。 */
+    int8_t phase_direction_hold;        /* 远区方向保持值，+1 表示希望相位增加，-1 表示希望相位减小。 */
+    int16_t dac_code_delta;             /* 最近一次写 DAC 时 code 的变化量；0 表示电压变量变化尚未跨过 DAC LSB。 */
+    uint8_t dac_code_changed;           /* 最近一次写 DAC 时 code 是否实际变化，便于区分 uV 累计和硬件真实输出。 */
 } app_carrier_sync_status_t;
 
 /* 调试观察用快照；变量窗口可直接查看，不影响闭环内部状态。 */

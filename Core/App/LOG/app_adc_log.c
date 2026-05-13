@@ -11,8 +11,9 @@
 #define APP_ADC_IQ_PREPROC_LOG_MS    1000U
 
 /* 宏定义说明：APP_ADC_CARRIER_SYNC_LOG_MS = 100U；相位闭环调试阶段每 100ms 输出一次 carrier 状态，便于观察 DPLL 动态。 */
+/* 宏定义说明：APP_ADC_CARRIER_SYNC_LOG_MS 当前配置为 50U；配合 1.5Mbit 串口提高相位接管诊断密度。 */
 #ifndef APP_ADC_CARRIER_SYNC_LOG_MS
-#define APP_ADC_CARRIER_SYNC_LOG_MS 100U
+#define APP_ADC_CARRIER_SYNC_LOG_MS 50U
 #endif
 
 /* 宏定义说明：APP_ADC_IQ_AMP_PHASE_LOG_MS = 1000U；锁定后 I/Q 幅度和 atan2(Q,I) 相位日志的最小输出周期。 */
@@ -210,6 +211,7 @@ void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status)
     static uint32_t last_log_tick = 0U;
     uint32_t now_tick;
     int32_t phase_mdeg_abs;
+    int32_t phase_abs_mdeg_abs;
     char line[125];
     int n;
 
@@ -236,11 +238,12 @@ void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status)
     }
 
     phase_mdeg_abs = (status->phase_error_mdeg >= 0) ? status->phase_error_mdeg : -status->phase_error_mdeg;
+    phase_abs_mdeg_abs = (status->phase_abs_mdeg >= 0) ? status->phase_abs_mdeg : -status->phase_abs_mdeg;
 
     /* 函数跳转：调用 snprintf()，输出第一条短日志，避免超过 print_msg_t 的 125 字节队列载荷。 */
     n = snprintf(line,
                  sizeof(line),
-                 "car,m=%s,en=%u,lk=%u,pt=%u,pv=%u,pu=%u,rf=%ld,uv=%ld,dc=%u,st=%lu\r\n",
+                 "car,m=%s,en=%u,lk=%u,pt=%u,pv=%u,pu=%u,rf=%ld,uv=%ld,dc=%u\r\n",
                  app_adc_log_carrier_mode_name(status->mode),
                  (unsigned)status->phase_lock_enabled,
                  (unsigned)status->locked_gate,
@@ -248,9 +251,8 @@ void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status)
                  (unsigned)status->phase_valid,
                  (unsigned)status->phase_allow_update,
                  (long)status->residual_freq_millihz,
-                 (long)status->control_uv,
-                 (unsigned)status->dac_code,
-                 (unsigned long)status->phase_stable_count);
+                  (long)status->control_uv,
+                  (unsigned)status->dac_code);
     /* 判断：格式化成功且没有截断时才送入日志队列，避免串口出现半行数据。 */
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {
@@ -260,16 +262,17 @@ void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status)
     /* 函数跳转：调用 snprintf()，输出第二条短日志，集中给出相位误差和圆均值质量。 */
     n = snprintf(line,
                  sizeof(line),
-                 "carp,deg=%s%ld.%03ld,tg=%ld,de=%ld,ctl=%ld,du=%ld,u=%lu,rel=%lu\r\n",
+                 "carp,ph=%s%ld.%03ld,tg=%ld,er=%s%ld.%03ld,de=%ld,fz=%u,dir=%d\r\n",
+                 (status->phase_abs_mdeg < 0) ? "-" : "",
+                 (long)(phase_abs_mdeg_abs / 1000),
+                 (long)(phase_abs_mdeg_abs % 1000),
+                 (long)status->phase_target_mdeg,
                  (status->phase_error_mdeg < 0) ? "-" : "",
                  (long)(phase_mdeg_abs / 1000),
                  (long)(phase_mdeg_abs % 1000),
-                 (long)status->phase_target_mdeg,
                  (long)status->phase_delta_mdeg,
-                 (long)status->phase_control_mdeg,
-                 (long)status->phase_delta_uv,
-                 (unsigned long)status->phase_used_count,
-                 (unsigned long)status->phase_resultant_pm);
+                 (unsigned)status->phase_far_zone,
+                 (int)status->phase_direction_hold);
     /* 判断：格式化成功且没有截断时才送入日志队列，避免串口出现半行数据。 */
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {
@@ -279,12 +282,29 @@ void app_adc_log_carrier_sync_1s(const app_carrier_sync_status_t *status)
     /* 函数跳转：调用 snprintf()，输出第三条相位闭环调试日志，观察 residual 低通、近区限速和跨越制动次数。 */
     n = snprintf(line,
                  sizeof(line),
-                 "carx,fl=%ld,lim=%lu,br=%lu,pc=%lu,fc=%lu\r\n",
+                 "carx,fl=%ld,tr=%ld,re=%ld,du=%ld,dcd=%d,chg=%u,st=%lu\r\n",
                  (long)status->phase_freq_lpf_millihz,
-                 (unsigned long)status->phase_slew_limit_uv,
-                 (unsigned long)status->phase_brake_count,
+                  (long)status->phase_target_residual_millihz,
+                  (long)status->phase_residual_error_millihz,
+                  (long)status->phase_delta_uv,
+                  (int)status->dac_code_delta,
+                  (unsigned)status->dac_code_changed,
+                  (unsigned long)status->phase_stable_count);
+    /* 判断：格式化成功且没有截断时才送入日志队列，避免串口出现半行数据。 */
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+        print_queue_send_log(line);
+    }
+
+    /* 函数跳转：调用 snprintf()，输出第四条测量质量日志，确认相位有效点数和圆均值可靠度是否支持闭环判断。 */
+    n = snprintf(line,
+                 sizeof(line),
+                 "carq,u=%lu,rel=%lu,pc=%lu,fc=%lu,le=%ld\r\n",
+                 (unsigned long)status->phase_used_count,
+                 (unsigned long)status->phase_resultant_pm,
                  (unsigned long)status->phase_update_count,
-                 (unsigned long)status->freq_update_count);
+                 (unsigned long)status->freq_update_count,
+                 (long)status->last_error);
     /* 判断：格式化成功且没有截断时才送入日志队列，避免串口出现半行数据。 */
     if ((n > 0) && ((size_t)n < sizeof(line)))
     {
