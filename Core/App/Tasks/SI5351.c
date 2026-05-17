@@ -2,6 +2,7 @@
 
 #include "../SI5351/Config/app_si5351_variant.h"
 #include "../SI5351/Wrapper/app_si5351_drv.h"
+#include "AppDebugConfig.h"
 #include "RtosTypes.h"
 #include "cmsis_os2.h"
 
@@ -10,6 +11,7 @@
 #define APP_SI5351_STARTUP_RETRY_MS  200U
 #define APP_SI5351_MONITOR_PERIOD_MS 200U
 #define APP_SI5351_LOCK_TIMEOUT_MS   100U
+#define SI5351_LOG_ENBLE 1 /* 是否启用 SI5351 相关日志输出 */
 
 /* 默认输出计划集中放在任务层，后续切版本或切板级频点时只改这里即可。 */
 static const app_si5351_output_cfg_t g_app_si5351_default_plan[] = {
@@ -23,16 +25,9 @@ static const app_si5351_output_cfg_t g_app_si5351_default_plan[] = {
 #endif
 };
 
-static void app_si5351_log_text(const char *text)
-{
-    if ((text != NULL) && (g_uart_mode == UART_MODE_LOG))
-    {
-        print_queue_send_log(text);
-    }
-}
-
 static void app_si5351_log_fault(app_si5351_result_t result)
 {
+#if (SI5351_LOG_ENBLE != 0U)
     static char log_buf[128];
 
     (void)snprintf(log_buf,
@@ -42,7 +37,10 @@ static void app_si5351_log_fault(app_si5351_result_t result)
                    (long)app_si5351_last_hal_status(),
                    app_si5351_variant_name(),
                    app_si5351_port_name());
-    app_si5351_log_text(log_buf);
+    print_queue_send(log_buf);
+#else
+    (void)result;
+#endif
 }
 
 static app_si5351_result_t app_si5351_start_default_plan(void)
@@ -81,13 +79,16 @@ static app_si5351_result_t app_si5351_start_default_plan(void)
         elapsed_ms += 5U;
     }
 
+    /* 暂时无CLKIN_LOST判定，都归类为 PLL 失锁 */
     return APP_SI5351_RESULT_PLL_UNLOCKED;
 }
 
 void StartSI5351(void *argument)
 {
     app_si5351_result_t last_fault = APP_SI5351_RESULT_OK;
+#if (SI5351_LOG_ENBLE != 0U)
     static char log_buf[192];
+#endif
 
     (void)argument;
 
@@ -101,6 +102,7 @@ void StartSI5351(void *argument)
             result = app_si5351_start_default_plan();
             if (result == APP_SI5351_RESULT_OK)
             {
+#if (SI5351_LOG_ENBLE != 0U)
                 (void)snprintf(log_buf,
                                sizeof(log_buf),
                                "si5351: ready addr=0x%02X variant=%s port=%s plan=%s\r\n",
@@ -108,7 +110,8 @@ void StartSI5351(void *argument)
                                app_si5351_variant_name(),
                                app_si5351_port_name(),
                                app_si5351_last_plan_summary());
-                app_si5351_log_text(log_buf);
+                print_queue_send(log_buf);
+#endif
                 last_fault = APP_SI5351_RESULT_OK;
                 osDelay(APP_SI5351_MONITOR_PERIOD_MS);
                 continue;

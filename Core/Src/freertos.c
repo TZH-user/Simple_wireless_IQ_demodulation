@@ -67,7 +67,7 @@ osThreadId_t DDSTaskHandle;
 const osThreadAttr_t DDSTask_attributes = {
   .name = "DDSTask",
   .stack_size = 256 * 4,
-  .priority = (osPriority_t) osPriorityAboveNormal,
+  .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for PrintfTask */
 osThreadId_t PrintfTaskHandle;
@@ -88,7 +88,7 @@ osThreadId_t ModDetectTaskHandle;
 const osThreadAttr_t ModDetectTask_attributes = {
   .name = "ModDetectTask",
   .stack_size = 1024 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for DemodTask */
 osThreadId_t DemodTaskHandle;
@@ -129,6 +129,11 @@ osSemaphoreId_t AdcFrameReadySemHandle;
 const osSemaphoreAttr_t AdcFrameReadySem_attributes = {
   .name = "AdcFrameReadySem"
 };
+/* Definitions for SweepBlockReadySem */
+osSemaphoreId_t SweepBlockReadySemHandle;
+const osSemaphoreAttr_t SweepBlockReadySem_attributes = {
+  .name = "SweepBlockReadySem"
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -163,6 +168,9 @@ void MX_FREERTOS_Init(void) {
   /* Create the semaphores(s) */
   /* creation of AdcFrameReadySem */
   AdcFrameReadySemHandle = osSemaphoreNew(1, 0, &AdcFrameReadySem_attributes);
+
+  /* creation of SweepBlockReadySem */
+  SweepBlockReadySemHandle = osSemaphoreNew(1, 1, &SweepBlockReadySem_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * DDS 控制层实现文件
  *
  * 文件定位：
@@ -170,6 +170,19 @@ AppDdsCmd AppDDS_MakeSetPhaseDegCmd(uint16_t phase_deg)
   memset(&cmd, 0, sizeof(cmd));
 
   cmd.type = APP_DDS_CMD_SET_PHASE_DEG;
+  cmd.u16 = phase_deg;
+  return cmd;
+}
+
+/* 手动相位微调使用：指定通道设置相位并立即 Apply。 */
+AppDdsCmd AppDDS_MakeSetChPhaseApplyCmd(uint8_t ch, uint16_t phase_deg)
+{
+  AppDdsCmd cmd;
+
+  memset(&cmd, 0, sizeof(cmd));
+
+  cmd.type = APP_DDS_CMD_SET_CH_PHASE_APPLY;
+  cmd.ch = ch;
   cmd.u16 = phase_deg;
   return cmd;
 }
@@ -411,6 +424,28 @@ int AppDDS_ExecuteCmd(const AppDdsCmd *cmd)
       return AppDDS_Apply();
     }
     //返回值 -4 表示命令类型不支持或未识别
+    case APP_DDS_CMD_SET_CH_PHASE_APPLY:
+    {
+      int ret;
+
+      /* 先切换到命令指定的逻辑通道。 */
+      ret = AppDDS_SelectChannel(cmd->ch);
+      if (ret != 0)
+      {
+        return ret;
+      }
+
+      /* 再写入目标相位角。 */
+      ret = AppDDS_SetPhaseDeg(cmd->u16);
+      if (ret != 0)
+      {
+        return ret;
+      }
+
+      /* 最后统一 Apply，保证相位修改真正下发到 AD9959。 */
+      return AppDDS_Apply();
+    }
+
     default:
       s_dds.last_err = -4;
       return -4;

@@ -83,7 +83,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/Tasks/AdcTask.c
     Core/App/Tasks/DDSTask.c
     Core/App/Tasks/SI5351.c
-    Core/App/LOG/app_adc_log.c
 
     Core/App/SI5351/Config
     Core/App/SI5351/Port/si5351_port.c
@@ -99,12 +98,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/DDS_9959/App_9959/app_dds_ctrl.c
 
     Core/App/Tasks/ModDetectTask.c
-    Core/App/Signal/app_signal_detect.c
-    Core/App/Signal/Pipeline/app_signal_pipeline.c
-    Core/App/Signal/Iq/app_signal_iq_track.c
-    Core/App/Signal/Sweep/app_signal_sweep.c
-    Core/App/Signal/Carrier/app_carrier_sync.c
-    Core/App/Signal/app_iq_preproc.c
+    Core/App/Sweep/app_sweep.c
+    Core/App/Analyze/Analyze.c
 )
 
 # Add include paths
@@ -113,6 +108,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/SDRAM
     Core/App/Touch
     Core/App/LVGL
+    Core/App/Tasks
     Core/Inc
 
     Core/App/Tasks/Types
@@ -125,14 +121,10 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/SI5351/Legacy/pro    
     Core/App/SI5351/Legacy/promax
 
-    Core/App/Signal
-    Core/App/Signal/Pipeline
-    Core/App/Signal/Iq
-    Core/App/Signal/Sweep
-    Core/App/Signal/Carrier
-    Core/App/LOG
+    Core/App/Sweep
     Core/App/DDS_9959/Hardware
     Core/App/DDS_9959/App_9959
+    Core/App/Analyze
 )
 
 # Add project symbols (macros)

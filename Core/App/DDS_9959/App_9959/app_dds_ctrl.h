@@ -67,7 +67,8 @@ typedef enum
   APP_DDS_CMD_SET_AMP,
   APP_DDS_CMD_SET_PHASE_DEG,
   APP_DDS_CMD_APPLY,
-  APP_DDS_CMD_SET_CH_FREQ_APPLY
+  APP_DDS_CMD_SET_CH_FREQ_APPLY,
+  APP_DDS_CMD_SET_CH_PHASE_APPLY
 } AppDdsCmdType;
 
 /* DDS 控制命令结构体。
@@ -133,6 +134,14 @@ AppDdsCmd AppDDS_MakeSetAmpCmd(uint16_t amp_code);
  * @retval 返回填充完成的命令结构体
  */
 AppDdsCmd AppDDS_MakeSetPhaseDegCmd(uint16_t phase_deg);
+
+/**
+ * @brief 构造一条“指定通道设置相位并立即 Apply”命令。
+ * @param ch 目标逻辑通道号，当前有效范围为 0~3
+ * @param phase_deg 目标相位角，单位为度
+ * @retval 返回填充完成的命令结构体
+ */
+AppDdsCmd AppDDS_MakeSetChPhaseApplyCmd(uint8_t ch, uint16_t phase_deg);
 
 /**
  * @brief 构造一条“统一提交缓存参数”命令。

@@ -1,10 +1,12 @@
 ﻿#include "app_lvgl_ui.h"
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "cmsis_os2.h"
-#include "app_signal_detect.h"
+#include "app_sweep.h"
+#include "ModDetectTask.h"
 #include "RtosTypes.h"
 #include "lvgl.h"
 
@@ -75,26 +77,24 @@ void App_LvglUiInit(void)
   lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
 
   label = lv_label_create(g_ui.detect_page);
-  lv_label_set_text(label, "Simple Wireless Auto Receiver");
+  lv_label_set_text(label, "Sweep Only Receiver");
   lv_obj_set_style_text_color(label, lv_color_hex(0xD8E6FF), 0);
   lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
   lv_obj_align(label, LV_ALIGN_TOP_LEFT, 16, 10);
 
   g_ui.range_line = lv_label_create(g_ui.detect_page);
   lv_label_set_text_fmt(g_ui.range_line,
-                        "Scan: %lu.%03lu-%lu.%03lu MHz  Coarse:%luk Fine:+/-%luk/%luk",
-                        (unsigned long)(APP_SIGDET_SCAN_START_HZ / 1000000UL),
-                        (unsigned long)((APP_SIGDET_SCAN_START_HZ % 1000000UL) / 1000UL),
-                        (unsigned long)(APP_SIGDET_SCAN_STOP_HZ / 1000000UL),
-                        (unsigned long)((APP_SIGDET_SCAN_STOP_HZ % 1000000UL) / 1000UL),
-                        (unsigned long)(APP_SIGDET_SCAN_STEP_HZ / 1000UL),
-                        (unsigned long)(APP_SIGDET_FINE_SPAN_HZ / 1000UL),
-                        (unsigned long)(APP_SIGDET_FINE_STEP_HZ / 1000UL));
+                        "Scan: %lu.%03lu-%lu.%03lu MHz  Step:%luk",
+                        (unsigned long)(APP_SWEEP_DEFAULT_START_HZ / 1000000UL),
+                        (unsigned long)((APP_SWEEP_DEFAULT_START_HZ % 1000000UL) / 1000UL),
+                        (unsigned long)(APP_SWEEP_DEFAULT_STOP_HZ / 1000000UL),
+                        (unsigned long)((APP_SWEEP_DEFAULT_STOP_HZ % 1000000UL) / 1000UL),
+                        (unsigned long)(APP_SWEEP_DEFAULT_STEP_HZ / 1000UL));
   lv_obj_set_style_text_color(g_ui.range_line, lv_color_hex(0x8AA6D1), 0);
   lv_obj_align(g_ui.range_line, LV_ALIGN_TOP_LEFT, 16, 40);
 
   main_card = App_LvglUiCreateCard(g_ui.detect_page, 12, 68, 500, 250, lv_color_hex(0x152238), lv_color_hex(0x365C91));
-  (void)App_LvglUiCreateCardTitle(main_card, "Carrier Frequency");
+  (void)App_LvglUiCreateCardTitle(main_card, "Sweep Center Frequency");
 
   g_ui.freq_value = lv_label_create(main_card);
   lv_label_set_text(g_ui.freq_value, "--.--- MHz");
@@ -103,24 +103,23 @@ void App_LvglUiInit(void)
   lv_obj_align(g_ui.freq_value, LV_ALIGN_TOP_LEFT, 16, 56);
 
   g_ui.scan_status = lv_label_create(main_card);
-  lv_label_set_text(g_ui.scan_status, "Status: INIT");
+  lv_label_set_text(g_ui.scan_status, "Status: WAIT ADC");
   lv_obj_set_style_text_color(g_ui.scan_status, lv_color_hex(0x9CD0FF), 0);
   lv_obj_align(g_ui.scan_status, LV_ALIGN_TOP_LEFT, 16, 150);
 
   g_ui.quality_line = lv_label_create(main_card);
-  lv_label_set_text(g_ui.quality_line, "Metric: best=0 noise=0");
+  lv_label_set_text(g_ui.quality_line, "Blocks: 0  Drops: 0");
   lv_obj_set_style_text_color(g_ui.quality_line, lv_color_hex(0xBFD3EF), 0);
   lv_obj_align(g_ui.quality_line, LV_ALIGN_TOP_LEFT, 16, 182);
+
   App_LvglUiShowPage(APP_UI_PAGE_DETECT);
 }
 
 void App_LvglUiRefresh(void)
 {
-  app_signal_detect_status_t st;
+  moddetect_task_stats_t st;
   uint32_t now_tick = osKernelGetTickCount();
   char freq_buf[32];
-  char left_edge_buf[32];
-  char right_edge_buf[32];
 
   if ((uint32_t)(now_tick - g_ui.last_refresh_tick) < UI_REFRESH_PERIOD_MS)
   {
@@ -128,56 +127,31 @@ void App_LvglUiRefresh(void)
   }
   g_ui.last_refresh_tick = now_tick;
 
-  app_signal_detect_get_status(&st);
+  moddetect_task_get_stats(&st);
 
-  if (st.scanning != 0U)
+  if (st.result_ready != 0U)
   {
-    App_LvglUiFormatFreq(freq_buf, sizeof(freq_buf), st.current_lo_hz);
-    lv_label_set_text_fmt(g_ui.scan_status,
-                          (st.stage == APP_SIGDET_STAGE_VPP_FINE_SCAN) ? "Status: VPP FINE (%u/%u)" : "Status: VPP COARSE (%u/%u)",
-                          (unsigned)(st.step_index + 1U),
-                          (unsigned)st.step_count);
+    App_LvglUiFormatFreq(freq_buf, sizeof(freq_buf), st.center_hz);
+    lv_label_set_text(g_ui.scan_status, "Status: CENTER FOUND");
   }
-  else if (st.stage == APP_SIGDET_STAGE_VPP_LOCKED)
+  else if (st.process_cnt != 0U)
   {
-    App_LvglUiFormatFreq(freq_buf, sizeof(freq_buf), st.estimated_carrier_hz);
-    if (st.carrier_present == 0U)
-    {
-      lv_label_set_text(g_ui.scan_status, "Status: NO VPP RESPONSE");
-    }
-    else if (st.locked != 0U)
-    {
-      lv_label_set_text(g_ui.scan_status, "Status: VPP LOCKED");
-    }
-    else
-    {
-      lv_label_set_text(g_ui.scan_status, "Status: VPP CANDIDATE");
-    }
-  }
-  else if (st.carrier_present != 0U)
-  {
-    App_LvglUiFormatFreq(freq_buf, sizeof(freq_buf), st.estimated_carrier_hz);
-    lv_label_set_text(g_ui.scan_status, "Status: CARRIER DETECTED");
+    snprintf(freq_buf, sizeof(freq_buf), "--.--- MHz");
+    lv_label_set_text(g_ui.scan_status, "Status: SWEEPING");
   }
   else
   {
     snprintf(freq_buf, sizeof(freq_buf), "--.--- MHz");
-    lv_label_set_text(g_ui.scan_status, "Status: NO CARRIER");
+    lv_label_set_text(g_ui.scan_status, "Status: WAIT ADC");
   }
 
   lv_label_set_text(g_ui.freq_value, freq_buf);
-  App_LvglUiFormatFreq(left_edge_buf, sizeof(left_edge_buf), st.left_edge_hz);
-  App_LvglUiFormatFreq(right_edge_buf, sizeof(right_edge_buf), st.right_edge_hz);
   lv_label_set_text_fmt(g_ui.quality_line,
-                        "Vpp: cur=%lu I=%lu Q=%lu peak=%lu valley=%lu\nEdge: L=%s R=%s th=%lu",
-                        (unsigned long)st.current_vpp_raw,
-                        (unsigned long)st.current_i_vpp_raw,
-                        (unsigned long)st.current_q_vpp_raw,
-                        (unsigned long)st.peak_vpp_raw,
-                        (unsigned long)st.valley_vpp_raw,
-                        left_edge_buf,
-                        right_edge_buf,
-                        (unsigned long)st.threshold_vpp_raw);
+                        "Blocks: %lu  Drops: %lu\nPublished: %lu  Seq: %lu",
+                        (unsigned long)st.process_cnt,
+                        (unsigned long)st.submit_drop_cnt,
+                        (unsigned long)st.submit_ok_cnt,
+                        (unsigned long)st.last_sequence);
 }
 
 void App_LvglUiSetModulationText(const char *text)
@@ -264,4 +238,5 @@ static void App_LvglUiShowPage(app_ui_page_t page)
   }
 
 }
+
 

@@ -14,14 +14,11 @@ typedef struct
     uint32_t queue_full_drop_cnt;
     uint32_t process_cnt;
     uint32_t last_sequence;
+    uint32_t center_hz;
+    uint8_t result_ready;
 } moddetect_task_stats_t;
 
-uint32_t moddetect_task_submit_block(const uint16_t *i_buf,
-                                     const uint16_t *q_buf,
-                                     uint32_t sample_cnt,
-                                     uint32_t demod_lo_hz,
-                                     uint32_t carrier_hz,
-                                     uint32_t tick_ms);
+void sweep_task_publish_block(const uint16_t *i_buf, const uint16_t *q_buf, uint32_t sample_cnt);
 
 void moddetect_task_get_stats(moddetect_task_stats_t *stats_out);
 

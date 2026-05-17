@@ -1,12 +1,12 @@
 #include <stdio.h>
 #include "RtosTypes.h"
+#include "AppDebugConfig.h"
 #include "SI5351.h"
 #include "app_si5351_drv.h"
 #include "app_dds_ctrl.h"
 
-#ifndef DDS_UART_STATUS_ENABLE
-#define DDS_UART_STATUS_ENABLE 0U
-#endif
+#define DDS_LO_SET_LOG_ENABLE 1U
+#define DDS_INIT_LOG_ENABLE 1U
 
 /* ·························临时代码开始····················  */
 /* 默认双通道输出开关，1 表示 DDS 任务启动后自动投递一组 40 MHz 正交输出命令。 */
@@ -69,10 +69,7 @@ static void dds_post_startup_dual_tone(void)
         /* 判断命令投递是否成功；失败时只记日志，不中断 DDS 主任务启动。 */
         if (dds_dispatch_cmd_checked(&startup_cmds[idx]) != 0)
         {
-            if (g_uart_mode == UART_MODE_LOG)
-            {
-                print_queue_send_log("dds: startup dual-tone dispatch failed\r\n");
-            }
+            print_queue_send("dds: startup dual-tone dispatch failed\r\n");
             break;
         }
     }
@@ -85,7 +82,7 @@ void StartDDSTask(void *argument)
     AppDdsCmd cmd;
     const AppDdsStatus *st;
     uint8_t wait_logged;
-#if (DDS_UART_STATUS_ENABLE != 0U)
+#if (APP_PRINT_LOG_ENABLE != 0U)
     char log_buf[96];
 #endif
 
@@ -94,17 +91,17 @@ void StartDDSTask(void *argument)
 
     while (!app_si5351_is_clock_ready())
     {
-        if ((wait_logged == 0U) && (g_uart_mode == UART_MODE_LOG))
+        if (wait_logged == 0U)
         {
-            print_queue_send_log("dds: wait si5351 refclk\r\n");
+            print_queue_send("dds: wait si5351 refclk\r\n");
             wait_logged = 1U;
         }
         osDelay(10U);
     }
 
-    if ((wait_logged != 0U) && (g_uart_mode == UART_MODE_LOG))
+    if (wait_logged != 0U)
     {
-        print_queue_send_log("dds: si5351 refclk ready\r\n");
+        print_queue_send("dds: si5351 refclk ready\r\n");
     }
 
     AppDDS_Init();
@@ -113,7 +110,7 @@ void StartDDSTask(void *argument)
     /* 临时代码 */
     dds_post_startup_dual_tone();
 
-#if (DDS_UART_STATUS_ENABLE != 0U)
+#if (DDS_INIT_LOG_ENABLE != 0U)
     st = AppDDS_GetStatus();
     snprintf(log_buf, sizeof(log_buf),
              "dds: init done hw=%u ch=%u dirty=0x%02X err=%ld\r\n",
@@ -121,10 +118,7 @@ void StartDDSTask(void *argument)
              st->selected_ch,
              st->dirty_mask,
              (long)st->last_err);
-    if (g_uart_mode == UART_MODE_LOG)
-    {
-       print_queue_send_log(log_buf);
-    }
+    print_queue_send(log_buf);
 #else
     (void)st;
 #endif
@@ -135,7 +129,7 @@ void StartDDSTask(void *argument)
         {
             AppDDS_ExecuteCmd(&cmd);
 
-#if (DDS_UART_STATUS_ENABLE != 0U)
+#if (DDS_LO_SET_LOG_ENABLE != 0U)
             st = AppDDS_GetStatus();
             snprintf(log_buf, sizeof(log_buf),
                      "dds: cmd=%u arg=%lu hw=%u ch=%u dirty=0x%02X err=%ld\r\n",
@@ -145,10 +139,7 @@ void StartDDSTask(void *argument)
                      st->selected_ch,
                      st->dirty_mask,
                      (long)st->last_err);
-            if (g_uart_mode == UART_MODE_LOG)
-            {
-                print_queue_send_log(log_buf);
-            }
+            print_queue_send(log_buf);
 #endif
         }
     }
