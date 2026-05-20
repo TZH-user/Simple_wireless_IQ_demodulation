@@ -19,6 +19,7 @@
 #define DAC_VREF_MV  3300U
 #define ENTER_LOG_ENABLE 0 /* 进入算法调度日志通道开关 */
 #define SWEEP_RUSULT_LOG_ENABLE 1 /* 扫频结果日志通道开关 */
+#define MODDETECT_ANALYZE_LOG_FLUSH_LINES 2U /* 每个 ADC 调度周期最多发送的分析日志行数，避免打印队列被频谱日志打满。 */
 
 static bool sweep_rest =0;
 static bool analyze_rest = 0U;
@@ -115,6 +116,32 @@ void StartModDetectTask(void *argument)
             continue;
         }
 
+        analyze_log_flush_step(MODDETECT_ANALYZE_LOG_FLUSH_LINES);
+
+        /* 统计已经领取的有效 ADC 块；后续可能进入扫频、分析或只刷新日志。 */
+        primask = __get_PRIMASK();
+        __disable_irq();
+        g_sweep_task_stats.process_cnt++;
+        __set_PRIMASK(primask);
+
+        if ((analyze_rest != 0U) && (analyze_is_done() == 0U))
+        {
+            (void)analyze_process_block(block.i_buf, block.q_buf, block.sample_cnt);
+            analyze_log_flush_step(MODDETECT_ANALYZE_LOG_FLUSH_LINES);
+            continue;
+        }
+
+        if ((analyze_rest != 0U) && (analyze_log_is_busy() != 0U))
+        {
+            analyze_log_flush_step(MODDETECT_ANALYZE_LOG_FLUSH_LINES);
+            continue;
+        }
+
+        if (analyze_rest != 0U)
+        {
+            continue;
+        }
+
         /* 检测算法入口是否能够收到ADC任务通知 */
     #if (ENTER_LOG_ENABLE != 0U)
         print_queue_send("moddetect: block ready\r\n");
@@ -128,10 +155,9 @@ void StartModDetectTask(void *argument)
                                              block.q_buf,
                                              block.sample_cnt);
 
-        /* 更新 ModDetectTask 的对外状态统计 */
+        /* 更新 ModDetectTask 的对外扫频状态统计 */
         primask = __get_PRIMASK();
         __disable_irq();
-        g_sweep_task_stats.process_cnt++;
         if (center_hz != 0U)
         {
             g_sweep_task_stats.center_hz = center_hz;
@@ -159,11 +185,15 @@ void StartModDetectTask(void *argument)
             if(sweep_rest == 0U)    app_sweep_reset();
         }
 
-        if ((center_hz != 0U) && (analyze_rest == 0U))
+        if (analyze_is_done() == 0U)
         {
-            analyze_start(center_hz,block.i_buf,block.q_buf,block.sample_cnt);
-            /* 分析结果已处理，重置分析状态以准备下一次发分析，通过analyze_rest=0开启循环分析 */
-            analyze_rest = 1U;
+            if ((center_hz != 0U) && (analyze_rest == 0U))
+            {
+                analyze_start(center_hz);
+                analyze_rest = 1U;
+                analyze_log_flush_step(MODDETECT_ANALYZE_LOG_FLUSH_LINES);
+                continue;
+            }
         }
     }
 }

@@ -185,7 +185,7 @@ void MX_FREERTOS_Init(void) {
   DDSQueueHandle = osMessageQueueNew (200, sizeof(AppDdsCmd), &DDSQueue_attributes);
 
   /* creation of PrintQueue */
-  PrintQueueHandle = osMessageQueueNew (8, 128, &PrintQueue_attributes);
+  PrintQueueHandle = osMessageQueueNew (32, 128, &PrintQueue_attributes);
 
   /* creation of ModDetectQueue */
   ModDetectQueueHandle = osMessageQueueNew (8, sizeof(uint32_t), &ModDetectQueue_attributes);

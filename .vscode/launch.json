@@ -19,12 +19,8 @@
             ],
             "serverRtos": {
                 "enabled": true,
-                "port": "60000",
+                "port": "60001",
                 "driver": "freertos"
-            },
-            "liveWatch": {
-                "enabled": true,
-                "samplesPerSecond": "4"
             }
         }
     ]

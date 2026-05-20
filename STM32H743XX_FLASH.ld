@@ -237,23 +237,13 @@ SECTIONS
     *(.dma_buffer)
     . = ALIGN(32);
   } >RAM_D2
-
-  /*------CPU-side modulation snapshots live in AXI SRAM, not DTCM.------*/
-  .moddetect_buffer (NOLOAD) :
+  
+  .ram_d1_buffer (NOLOAD) :
   {
     . = ALIGN(32);
-    *(.moddetect_buffer)
+    *(.ram_d1_buffer)
     . = ALIGN(32);
-  } >RAM
-  /*------CPU-side demod snapshots live in AXI SRAM, not DTCM.------*/
-  .demod_buffer (NOLOAD) :
-  {
-    . = ALIGN(32);
-    *(.demod_buffer)
-    . = ALIGN(32);
-  } >RAM
-
-
+  } >RAM_D2
   
   /* User_heap_stack section, used to check that there is enough RAM left */
   ._user_heap_stack (NOLOAD) :

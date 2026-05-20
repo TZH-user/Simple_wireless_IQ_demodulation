@@ -16,8 +16,8 @@
 #define APP_SWEEP_THRESHOLD_SHIFT 2U
 #define APP_SWEEP_SETTLE_BLOCKS 2U
 
-#define APP_SWEEP_FINAL_LO_OFFSET_HZ 1000UL /* 最终频点微调时的 LO 偏移，单位 Hz */
-#define SWEEP_POINT_LOG_ENABLE 0U
+#define APP_SWEEP_FINAL_LO_OFFSET_HZ 10000UL /* 最终频点微调时的 LO 偏移，单位 Hz */
+#define SWEEP_POINT_LOG_ENABLE 1U
 
 typedef enum
 {

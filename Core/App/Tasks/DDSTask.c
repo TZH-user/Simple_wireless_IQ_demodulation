@@ -5,7 +5,7 @@
 #include "app_si5351_drv.h"
 #include "app_dds_ctrl.h"
 
-#define DDS_LO_SET_LOG_ENABLE 1U
+#define DDS_LO_SET_LOG_ENABLE 0U
 #define DDS_INIT_LOG_ENABLE 1U
 
 /* ·························临时代码开始····················  */
