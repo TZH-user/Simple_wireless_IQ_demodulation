@@ -8,9 +8,9 @@
 #include <stdio.h>
 
 #define PRINTF_FW_ID_PRODUCT          "IQ_Sweep_test"
-#define PRINTF_FW_ID_BUILD            "20260517_19:33"
+#define PRINTF_FW_ID_BUILD            "20260523_05:36"
 #define PRINTF_FW_ID_FEATURE_ASK      "virtual_cd_rd"
-#define PRINTF_FW_ID_FEATURE_PSK      "rotate_sparse"
+#define PRINTF_FW_ID_FEATURE_PSK      "fm_guard_psk"
 #define PRINTF_FW_ID_REPEAT_COUNT     1U
 #define PRINTF_FW_ID_REPEAT_PERIOD_MS 500U
 #define PRINTF_TASK_QUEUE_WAIT_MS     100U

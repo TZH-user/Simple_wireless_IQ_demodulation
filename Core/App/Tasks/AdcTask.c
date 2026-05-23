@@ -6,6 +6,7 @@
 #include "tim.h"
 #include "AppDebugConfig.h"
 #include "ModDetectTask.h"
+#include "DemodTask.h"
 #include <stdio.h>
 #include "RtosTypes.h"
 
@@ -103,6 +104,11 @@ void StartAdcTask(void *argument)
             {
                 /* 通知ModDetectTask执行算法任务 */
                 (void)osSemaphoreRelease(SweepBlockReadySemHandle);
+            }
+            demod_task_publish_block(&adc1_buf[start_index], &adc2_buf[start_index], ADC_BLOCK_N);
+            if (DemodBlockReadySemHandle != NULL)
+            {
+                (void)osSemaphoreRelease(DemodBlockReadySemHandle);
             }
 
         }

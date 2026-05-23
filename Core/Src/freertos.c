@@ -134,6 +134,11 @@ osSemaphoreId_t SweepBlockReadySemHandle;
 const osSemaphoreAttr_t SweepBlockReadySem_attributes = {
   .name = "SweepBlockReadySem"
 };
+/* Definitions for DemodBlockReadySem */
+osSemaphoreId_t DemodBlockReadySemHandle;
+const osSemaphoreAttr_t DemodBlockReadySem_attributes = {
+  .name = "DemodBlockReadySem"
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -172,8 +177,12 @@ void MX_FREERTOS_Init(void) {
   /* creation of SweepBlockReadySem */
   SweepBlockReadySemHandle = osSemaphoreNew(1, 1, &SweepBlockReadySem_attributes);
 
+  /* creation of DemodBlockReadySem */
+  DemodBlockReadySemHandle = osSemaphoreNew(1, 1, &DemodBlockReadySem_attributes);
+
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
+
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */

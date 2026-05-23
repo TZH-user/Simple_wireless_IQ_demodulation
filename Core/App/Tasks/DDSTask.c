@@ -11,7 +11,7 @@
 /* ·························临时代码开始····················  */
 /* 默认双通道输出开关，1 表示 DDS 任务启动后自动投递一组 40 MHz 正交输出命令。 */
 #ifndef DDS_STARTUP_DUAL_TONE_ENABLE
-#define DDS_STARTUP_DUAL_TONE_ENABLE 1U
+#define DDS_STARTUP_DUAL_TONE_ENABLE 0U
 #endif
 
 #define DDS_STARTUP_CH2_INDEX 2U

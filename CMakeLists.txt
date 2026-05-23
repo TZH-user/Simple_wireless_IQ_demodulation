@@ -98,8 +98,14 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/DDS_9959/App_9959/app_dds_ctrl.c
 
     Core/App/Tasks/ModDetectTask.c
+    Core/App/Tasks/DemodTask.c
     Core/App/Sweep/app_sweep.c
     Core/App/Analyze/Analyze.c
+    Core/App/DEMODE/rx_demod.c
+
+    Core/App/BoardFlash/app_board_flash.c
+    Core/App/BoardFlash/board_flash_qspi_port.c
+    Core/App/BoardFlash/board_flash_w25q64.c
 )
 
 # Add include paths
@@ -125,6 +131,10 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/DDS_9959/Hardware
     Core/App/DDS_9959/App_9959
     Core/App/Analyze
+    Core/App/DEMODE
+    Core/App/BoardFlash
+
+    Drivers/CMSIS/DSP/Include
 )
 
 # Add project symbols (macros)

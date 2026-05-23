@@ -25,6 +25,7 @@
 #include "dma.h"
 #include "i2c.h"
 #include "ltdc.h"
+#include "quadspi.h"
 #include "tim.h"
 #include "usart.h"
 #include "gpio.h"
@@ -130,6 +131,7 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_DAC1_Init();
+  MX_QUADSPI_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */

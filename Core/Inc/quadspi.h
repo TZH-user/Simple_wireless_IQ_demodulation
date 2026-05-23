@@ -1,25 +1,14 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    dac.h
-  * @brief   This file contains all the function prototypes for
-  *          the dac.c file
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
+  * @file    quadspi.h
+  * @brief   This file contains all the function prototypes for the quadspi.c file.
   ******************************************************************************
   */
 /* USER CODE END Header */
 /* Define to prevent recursive inclusion -------------------------------------*/
-#ifndef __DAC_H__
-#define __DAC_H__
+#ifndef __QUADSPI_H__
+#define __QUADSPI_H__
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,14 +21,13 @@ extern "C" {
 
 /* USER CODE END Includes */
 
-extern DAC_HandleTypeDef hdac1;
+extern QSPI_HandleTypeDef hqspi;
 
 /* USER CODE BEGIN Private defines */
-extern DMA_HandleTypeDef hdma_dac1_ch2;
 
 /* USER CODE END Private defines */
 
-void MX_DAC1_Init(void);
+void MX_QUADSPI_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
@@ -49,5 +37,4 @@ void MX_DAC1_Init(void);
 }
 #endif
 
-#endif /* __DAC_H__ */
-
+#endif /* __QUADSPI_H__ */

@@ -11,17 +11,18 @@
 #define APP_SI5351_STARTUP_RETRY_MS  200U
 #define APP_SI5351_MONITOR_PERIOD_MS 200U
 #define APP_SI5351_LOCK_TIMEOUT_MS   100U
+#define APP_SI5351_MONITOR_FAIL_LIMIT 5U /* ready 后连续失败多少次才判定时钟失效；调大可抗 I2C/PLL 瞬态抖动，调小掉线响应更快。 */
 #define SI5351_LOG_ENBLE 1 /* 是否启用 SI5351 相关日志输出 */
 
 /* 默认输出计划集中放在任务层，后续切版本或切板级频点时只改这里即可。 */
 static const app_si5351_output_cfg_t g_app_si5351_default_plan[] = {
-    {0U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
+    {2U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
 #if APP_SI5351_SELECTED_VARIANT == APP_SI5351_VARIANT_BASIC
     /* basic 版本不支持强制绑 PLLB，这里必须退回 AUTO。 */
-    {1U, 20480000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
+    {2U, 20480000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
 #else
-    /* pro/promax 版本允许把 32.768 MHz 独立挂到 PLLB。 */
-    {1U, 20480000UL, APP_SI5351_PLL_PLLB, APP_SI5351_DRIVE_DEFAULT, true},
+    /* pro/promax 版本允许把 2.048 MHz 独立挂到 PLLB。 */
+    {0U, 20480000UL, APP_SI5351_PLL_PLLB, APP_SI5351_DRIVE_DEFAULT, true},
 #endif
 };
 
@@ -86,6 +87,7 @@ static app_si5351_result_t app_si5351_start_default_plan(void)
 void StartSI5351(void *argument)
 {
     app_si5351_result_t last_fault = APP_SI5351_RESULT_OK;
+    uint8_t monitor_fail_cnt = 0U;
 #if (SI5351_LOG_ENBLE != 0U)
     static char log_buf[192];
 #endif
@@ -113,6 +115,7 @@ void StartSI5351(void *argument)
                 print_queue_send(log_buf);
 #endif
                 last_fault = APP_SI5351_RESULT_OK;
+                monitor_fail_cnt = 0U;
                 osDelay(APP_SI5351_MONITOR_PERIOD_MS);
                 continue;
             }
@@ -132,16 +135,29 @@ void StartSI5351(void *argument)
         result = app_si5351_check_ref_status();
         if (result != APP_SI5351_RESULT_OK)
         {
+            if (monitor_fail_cnt < APP_SI5351_MONITOR_FAIL_LIMIT)
+            {
+                monitor_fail_cnt++;
+            }
+
+            if (monitor_fail_cnt < APP_SI5351_MONITOR_FAIL_LIMIT)
+            {
+                osDelay(APP_SI5351_MONITOR_PERIOD_MS);
+                continue;
+            }
+
             (void)app_si5351_enable_outputs(false);
             if (result != last_fault)
             {
                 app_si5351_log_fault(result);
                 last_fault = result;
             }
+            monitor_fail_cnt = 0U;
             osDelay(APP_SI5351_STARTUP_RETRY_MS);
             continue;
         }
 
+        monitor_fail_cnt = 0U;
         last_fault = APP_SI5351_RESULT_OK;
         osDelay(APP_SI5351_MONITOR_PERIOD_MS);
     }

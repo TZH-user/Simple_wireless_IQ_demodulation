@@ -19,6 +19,7 @@ extern osMessageQueueId_t DemodQueueHandle;
 
 extern osSemaphoreId_t AdcFrameReadySemHandle;
 extern osSemaphoreId_t SweepBlockReadySemHandle;
+extern osSemaphoreId_t DemodBlockReadySemHandle;
 
 extern osThreadId_t AdcTaskHandle;
 extern osThreadId_t PrintfTaskHandle;
