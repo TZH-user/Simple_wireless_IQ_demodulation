@@ -31,6 +31,8 @@
 
 #define MODDETECT_DDS_REINIT_ON_START_ENABLE 1U /* 每次点击校准或任务前重新初始化 AD9959，降低 DDS 长时间运行后状态漂移的影响。 */
 
+#define MODDETECT_ADC_REF_CLOCK_TIMEOUT_MS 1000U /* ADC 数据块超过该时间未更新，就认为 ADC 参考时钟或采样链路异常。 */
+
 static bool sweep_rest =0;
 static bool analyze_rest = 0U;
 #if (MODDETECT_AUTO_DEMOD_ENABLE != 0U)
@@ -74,6 +76,8 @@ void sweep_task_publish_block(const uint16_t *i_buf, const uint16_t *q_buf, uint
     g_sweep_block.pending = 1U;
     g_sweep_task_stats.submit_ok_cnt++;
     g_sweep_task_stats.last_sequence++;
+    g_sweep_task_stats.adc_last_tick = osKernelGetTickCount();
+    g_sweep_task_stats.adc_ref_ok = 1U;
     __set_PRIMASK(primask);
 }
 
@@ -258,6 +262,7 @@ void moddetect_task_request_mode(moddetect_run_mode_t mode)
     {
         g_sweep_task_stats.cal_done = 0U;
         g_sweep_task_stats.cal_valid = 0U;
+        g_sweep_task_stats.cal_state = MODDETECT_CAL_RUNNING;
         g_sweep_task_stats.cal_clip_cnt = 0UL;
     }
     __set_PRIMASK(primask);
@@ -326,6 +331,7 @@ static void moddetect_apply_mode_request(void)
     {
         g_sweep_task_stats.cal_done = 0U;
         g_sweep_task_stats.cal_valid = 0U;
+        g_sweep_task_stats.cal_state = MODDETECT_CAL_RUNNING;
         g_sweep_task_stats.cal_clip_cnt = 0UL;
     }
     __set_PRIMASK(primask);
@@ -334,6 +340,7 @@ static void moddetect_apply_mode_request(void)
 void moddetect_task_get_stats(moddetect_task_stats_t *stats_out)
 {
     uint32_t primask;
+    uint32_t now_tick;
 
     if (stats_out == NULL)
     {
@@ -344,6 +351,13 @@ void moddetect_task_get_stats(moddetect_task_stats_t *stats_out)
     __disable_irq();
     *stats_out = g_sweep_task_stats;
     __set_PRIMASK(primask);
+
+    now_tick = osKernelGetTickCount();
+    if ((stats_out->adc_last_tick == 0UL) ||
+        ((uint32_t)(now_tick - stats_out->adc_last_tick) > MODDETECT_ADC_REF_CLOCK_TIMEOUT_MS))
+    {
+        stats_out->adc_ref_ok = 0U;
+    }
 }
 
 void StartModDetectTask(void *argument)
@@ -352,6 +366,23 @@ void StartModDetectTask(void *argument)
     uint32_t dac_code = dac_mv_to_code(1400U);
     HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
     HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_code);   
+
+    if (app_sweep_load_calibration_from_flash() != 0U)
+    {
+        uint32_t primask;
+
+        moddetect_update_cal_stats();
+        primask = __get_PRIMASK();
+        __disable_irq();
+        g_sweep_task_stats.cal_done = 1U;
+        g_sweep_task_stats.cal_state = MODDETECT_CAL_HISTORY;
+        __set_PRIMASK(primask);
+        print_queue_send("cal:flash,load,1\r\n");
+    }
+    else
+    {
+        print_queue_send("cal:flash,load,0\r\n");
+    }
 
     for (;;)
     {
@@ -415,6 +446,23 @@ void StartModDetectTask(void *argument)
                 g_sweep_task_stats.cal_done = 1U;
                 __set_PRIMASK(primask);
                 moddetect_update_cal_stats();
+                primask = __get_PRIMASK();
+                __disable_irq();
+                g_sweep_task_stats.cal_state = MODDETECT_CAL_SAVING;
+                __set_PRIMASK(primask);
+                if (app_sweep_save_calibration_to_flash() != 0U)
+                {
+                    print_queue_send("cal:flash,save,1\r\n");
+                }
+                else
+                {
+                    print_queue_send("cal:flash,save,0\r\n");
+                }
+                primask = __get_PRIMASK();
+                __disable_irq();
+                g_sweep_task_stats.cal_state =
+                    (g_sweep_task_stats.cal_valid != 0U) ? MODDETECT_CAL_CURRENT : MODDETECT_CAL_NONE;
+                __set_PRIMASK(primask);
             }
             continue;
         }

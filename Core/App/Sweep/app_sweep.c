@@ -7,6 +7,7 @@
 #include "RtosTypes.h"
 
 #include "app_dds_ctrl.h"
+#include "app_board_flash.h"
 
 #define APP_SWEEP_MAX_STEPS 512U
 #define APP_SWEEP_INVALID_STEP 0xFFFFU
@@ -46,6 +47,12 @@
 #define APP_SWEEP_ADC_CLIP_HIGH 16373U            /* ADC 大于等于该值，认为接近上限打满。 */
 #define APP_SWEEP_CLIP_LOG_ENABLE 0U              /* 是否逐点打印 ADC 打满明细；平时关掉，避免串口太多。 */
 #define APP_SWEEP_CAL_POINT_LOG_ENABLE 1U         /* 校准时是否逐点打印基线，方便在 VOFA 看校准曲线。 */
+
+#define APP_SWEEP_CAL_FLASH_ENABLE 1U             /* 是否把校准基线保存到板载 Flash；关掉后只保留 RAM 校准。 */
+#define APP_SWEEP_CAL_FLASH_ADDR (APP_BOARD_FLASH_TOTAL_SIZE - APP_BOARD_FLASH_SECTOR_SIZE) /* 校准数据固定使用最后一个 4K 扇区。 */
+#define APP_SWEEP_CAL_FLASH_MAGIC 0x53574341UL    /* Flash 校准记录标识，防止误读其他数据。 */
+#define APP_SWEEP_CAL_FLASH_VERSION 1UL           /* Flash 校准记录版本，结构变化时递增。 */
+#define APP_SWEEP_CAL_FLASH_CRC_SEED 2166136261UL /* 校准记录校验种子，用于判断掉电数据是否完整。 */
 
 typedef enum
 {
@@ -132,8 +139,27 @@ typedef struct
     app_sweep_calibration_stats_t stats;
 } app_sweep_calibration_ctx_t;
 
+typedef struct
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t record_size;
+    uint32_t start_hz;
+    uint32_t stop_hz;
+    uint32_t step_hz;
+    uint32_t point_count;
+    uint32_t clip_count;
+    uint32_t max_vpp;
+    uint32_t min_vpp;
+    uint32_t baseline_avg_vpp;
+    uint32_t baseline_vpp[APP_SWEEP_MAX_STEPS];
+    uint8_t clip_flag[APP_SWEEP_MAX_STEPS];
+    uint32_t crc;
+} app_sweep_cal_flash_record_t;
+
 static app_sweep_ctx_t g_sweep;
 static app_sweep_calibration_ctx_t g_sweep_cal;
+static app_sweep_cal_flash_record_t g_sweep_cal_flash_record;
 
 /* 频率封锁表：按 Hz 填写；0UL 为占位值，会被匹配逻辑忽略。 */
 static const uint32_t g_sweep_block_freq_hz[] =
@@ -203,6 +229,10 @@ static void sweep_log_clip(uint32_t freq_hz, uint16_t step_index);
 static void sweep_log_cal_point(uint32_t freq_hz, uint16_t step_index, uint32_t avg_vpp, uint8_t clip);
 #endif
 static void sweep_log_cal_summary(void);
+static uint32_t sweep_cal_flash_crc(const app_sweep_cal_flash_record_t *record);
+static uint8_t sweep_cal_flash_record_valid(const app_sweep_cal_flash_record_t *record);
+static void sweep_cal_flash_export(app_sweep_cal_flash_record_t *record);
+static void sweep_cal_flash_import(const app_sweep_cal_flash_record_t *record);
 #if (APP_SWEEP_CANDIDATE_LOG_ENABLE != 0U)
 static void sweep_log_candidates(const app_sweep_candidate_t *candidates,
                                  uint16_t log_count,
@@ -1687,6 +1717,154 @@ void app_sweep_get_calibration_stats(app_sweep_calibration_stats_t *stats_out)
     }
 
     *stats_out = g_sweep_cal.stats;
+}
+
+/* 计算校准记录校验值，只覆盖 crc 字段之前的数据。 */
+static uint32_t sweep_cal_flash_crc(const app_sweep_cal_flash_record_t *record)
+{
+    const uint8_t *bytes = (const uint8_t *)record;
+    uint32_t crc = APP_SWEEP_CAL_FLASH_CRC_SEED;
+    uint32_t idx;
+
+    if (record == 0)
+    {
+        return 0UL;
+    }
+
+    for (idx = 0UL; idx < (sizeof(app_sweep_cal_flash_record_t) - sizeof(uint32_t)); idx++)
+    {
+        crc ^= (uint32_t)bytes[idx];
+        crc *= 16777619UL;
+    }
+
+    return crc;
+}
+
+/* 检查 Flash 中读出的校准记录是否属于当前固件和当前结构。 */
+static uint8_t sweep_cal_flash_record_valid(const app_sweep_cal_flash_record_t *record)
+{
+    if (record == 0)
+    {
+        return 0U;
+    }
+
+    if ((record->magic != APP_SWEEP_CAL_FLASH_MAGIC) ||
+        (record->version != APP_SWEEP_CAL_FLASH_VERSION) ||
+        (record->record_size != sizeof(app_sweep_cal_flash_record_t)) ||
+        (record->point_count == 0UL) ||
+        (record->point_count > APP_SWEEP_MAX_STEPS) ||
+        (record->step_hz == 0UL))
+    {
+        return 0U;
+    }
+
+    return (record->crc == sweep_cal_flash_crc(record)) ? 1U : 0U;
+}
+
+/* 将当前 RAM 校准基线打包成可直接写入 Flash 的固定记录。 */
+static void sweep_cal_flash_export(app_sweep_cal_flash_record_t *record)
+{
+    if (record == 0)
+    {
+        return;
+    }
+
+    memset(record, 0, sizeof(*record));
+    record->magic = APP_SWEEP_CAL_FLASH_MAGIC;
+    record->version = APP_SWEEP_CAL_FLASH_VERSION;
+    record->record_size = sizeof(*record);
+    record->start_hz = g_sweep_cal.start_hz;
+    record->stop_hz = g_sweep_cal.stop_hz;
+    record->step_hz = g_sweep_cal.step_hz;
+    record->point_count = g_sweep_cal.stats.point_count;
+    record->clip_count = g_sweep_cal.stats.clip_count;
+    record->max_vpp = g_sweep_cal.stats.max_vpp;
+    record->min_vpp = g_sweep_cal.stats.min_vpp;
+    record->baseline_avg_vpp = g_sweep_cal.baseline_avg_vpp;
+    memcpy(record->baseline_vpp, g_sweep_cal.baseline_vpp, sizeof(record->baseline_vpp));
+    memcpy(record->clip_flag, g_sweep_cal.clip_flag, sizeof(record->clip_flag));
+    record->crc = sweep_cal_flash_crc(record);
+}
+
+/* 将通过校验的 Flash 校准记录恢复到扫频 RAM 基线。 */
+static void sweep_cal_flash_import(const app_sweep_cal_flash_record_t *record)
+{
+    if (record == 0)
+    {
+        return;
+    }
+
+    memset(&g_sweep_cal, 0, sizeof(g_sweep_cal));
+    g_sweep_cal.start_hz = record->start_hz;
+    g_sweep_cal.stop_hz = record->stop_hz;
+    g_sweep_cal.step_hz = record->step_hz;
+    g_sweep_cal.baseline_avg_vpp = record->baseline_avg_vpp;
+    g_sweep_cal.stats.point_count = (uint16_t)record->point_count;
+    g_sweep_cal.stats.clip_count = record->clip_count;
+    g_sweep_cal.stats.max_vpp = record->max_vpp;
+    g_sweep_cal.stats.min_vpp = record->min_vpp;
+    g_sweep_cal.stats.valid = 1U;
+    memcpy(g_sweep_cal.baseline_vpp, record->baseline_vpp, sizeof(g_sweep_cal.baseline_vpp));
+    memcpy(g_sweep_cal.clip_flag, record->clip_flag, sizeof(g_sweep_cal.clip_flag));
+}
+
+/* 从板载 Flash 恢复上次校准基线；失败时保持当前 RAM 状态不变。 */
+uint8_t app_sweep_load_calibration_from_flash(void)
+{
+#if (APP_SWEEP_CAL_FLASH_ENABLE != 0U)
+    app_board_flash_result_t result;
+
+    result = app_board_flash_read(APP_SWEEP_CAL_FLASH_ADDR,
+                                  (uint8_t *)&g_sweep_cal_flash_record,
+                                  sizeof(g_sweep_cal_flash_record));
+    if ((result != APP_BOARD_FLASH_OK) ||
+        (sweep_cal_flash_record_valid(&g_sweep_cal_flash_record) == 0U))
+    {
+        return 0U;
+    }
+
+    sweep_cal_flash_import(&g_sweep_cal_flash_record);
+    return 1U;
+#else
+    return 0U;
+#endif
+}
+
+/* 将当前有效 RAM 校准基线写入板载 Flash，供下次上电继续使用。 */
+uint8_t app_sweep_save_calibration_to_flash(void)
+{
+#if (APP_SWEEP_CAL_FLASH_ENABLE != 0U)
+    app_board_flash_result_t result;
+
+    if (g_sweep_cal.stats.valid == 0U)
+    {
+        return 0U;
+    }
+
+    sweep_cal_flash_export(&g_sweep_cal_flash_record);
+    result = app_board_flash_erase_4k(APP_SWEEP_CAL_FLASH_ADDR);
+    if (result != APP_BOARD_FLASH_OK)
+    {
+        return 0U;
+    }
+
+    result = app_board_flash_write(APP_SWEEP_CAL_FLASH_ADDR,
+                                   (const uint8_t *)&g_sweep_cal_flash_record,
+                                   sizeof(g_sweep_cal_flash_record));
+    if (result != APP_BOARD_FLASH_OK)
+    {
+        return 0U;
+    }
+
+    memset(&g_sweep_cal_flash_record, 0, sizeof(g_sweep_cal_flash_record));
+    result = app_board_flash_read(APP_SWEEP_CAL_FLASH_ADDR,
+                                  (uint8_t *)&g_sweep_cal_flash_record,
+                                  sizeof(g_sweep_cal_flash_record));
+    return ((result == APP_BOARD_FLASH_OK) &&
+            (sweep_cal_flash_record_valid(&g_sweep_cal_flash_record) != 0U)) ? 1U : 0U;
+#else
+    return 0U;
+#endif
 }
 
 uint8_t app_sweep_is_done(void)

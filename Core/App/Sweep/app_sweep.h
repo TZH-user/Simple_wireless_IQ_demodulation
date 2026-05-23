@@ -45,6 +45,8 @@ uint8_t app_sweep_calibrate_baseline(uint32_t start_hz,
                                      const uint16_t *q_buf,
                                      uint32_t sample_cnt);
 void app_sweep_get_calibration_stats(app_sweep_calibration_stats_t *stats_out);
+uint8_t app_sweep_load_calibration_from_flash(void);
+uint8_t app_sweep_save_calibration_to_flash(void);
 uint8_t app_sweep_is_done(void);
 void app_sweep_reset(void);
 

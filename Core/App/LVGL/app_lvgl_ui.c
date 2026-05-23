@@ -57,6 +57,7 @@ typedef struct
   lv_obj_t *freq_value;
   lv_obj_t *scan_status;
   lv_obj_t *cal_status;
+  lv_obj_t *adc_ref_status;
   lv_obj_t *si5351_status;
   lv_obj_t *ad9959_status;
   lv_obj_t *quality_line;
@@ -155,6 +156,21 @@ void App_LvglUiInit(void)
   App_LvglUiSetHwStatus(g_ui.si5351_status, "SI5351 --", lv_color_hex(0x64748B));
   lv_obj_align(g_ui.si5351_status, LV_ALIGN_TOP_RIGHT, -(16 + UI_HW_TAG_WIDTH + UI_HW_TAG_GAP), 10);
 
+  g_ui.adc_ref_status = lv_label_create(g_ui.detect_page);
+  lv_obj_set_size(g_ui.adc_ref_status, UI_HW_TAG_WIDTH, UI_HW_TAG_HEIGHT);
+  lv_label_set_long_mode(g_ui.adc_ref_status, LV_LABEL_LONG_MODE_CLIP);
+  lv_obj_set_style_radius(g_ui.adc_ref_status, 8, 0);
+  lv_obj_set_style_bg_opa(g_ui.adc_ref_status, LV_OPA_COVER, 0);
+  lv_obj_set_style_text_color(g_ui.adc_ref_status, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_text_align(g_ui.adc_ref_status, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(g_ui.adc_ref_status, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_pad_top(g_ui.adc_ref_status, 3, 0);
+  App_LvglUiSetHwStatus(g_ui.adc_ref_status, "ADC --", lv_color_hex(0x64748B));
+  lv_obj_align(g_ui.adc_ref_status,
+               LV_ALIGN_TOP_RIGHT,
+               -(16 + (2 * UI_HW_TAG_WIDTH) + (2 * UI_HW_TAG_GAP)),
+               10);
+
   g_ui.cal_status = lv_label_create(g_ui.detect_page);
   lv_obj_set_size(g_ui.cal_status, UI_CAL_TAG_WIDTH, UI_HW_TAG_HEIGHT);
   lv_label_set_long_mode(g_ui.cal_status, LV_LABEL_LONG_MODE_CLIP);
@@ -167,7 +183,7 @@ void App_LvglUiInit(void)
   App_LvglUiSetHwStatus(g_ui.cal_status, "CAL --", lv_color_hex(0x64748B));
   lv_obj_align(g_ui.cal_status,
                LV_ALIGN_TOP_RIGHT,
-               -(16 + (2 * UI_HW_TAG_WIDTH) + (2 * UI_HW_TAG_GAP)),
+               -(16 + (3 * UI_HW_TAG_WIDTH) + (3 * UI_HW_TAG_GAP)),
                10);
 
   g_ui.range_line = lv_label_create(g_ui.detect_page);
@@ -413,13 +429,21 @@ static void App_LvglUiRefreshHwStatus(const moddetect_task_stats_t *stats)
 
   if (stats != NULL)
   {
-    if ((stats->run_mode == MODDETECT_RUN_CALIBRATION) && (stats->cal_done == 0U))
+    if (stats->cal_state == MODDETECT_CAL_RUNNING)
     {
       App_LvglUiSetHwStatus(g_ui.cal_status, "CAL RUN", lv_color_hex(0xCA8A04));
     }
-    else if (stats->cal_valid != 0U)
+    else if (stats->cal_state == MODDETECT_CAL_SAVING)
     {
-      App_LvglUiSetHwStatus(g_ui.cal_status, "CAL OK", lv_color_hex(0x16A34A));
+      App_LvglUiSetHwStatus(g_ui.cal_status, "CAL SAVE", lv_color_hex(0x2563EB));
+    }
+    else if (stats->cal_state == MODDETECT_CAL_HISTORY)
+    {
+      App_LvglUiSetHwStatus(g_ui.cal_status, "CAL OLD", lv_color_hex(0x16A34A));
+    }
+    else if (stats->cal_state == MODDETECT_CAL_CURRENT)
+    {
+      App_LvglUiSetHwStatus(g_ui.cal_status, "CAL RAM", lv_color_hex(0x16A34A));
     }
     else if (stats->cal_done != 0U)
     {
@@ -429,6 +453,15 @@ static void App_LvglUiRefreshHwStatus(const moddetect_task_stats_t *stats)
     {
       App_LvglUiSetHwStatus(g_ui.cal_status, "CAL --", lv_color_hex(0x64748B));
     }
+  }
+
+  if ((stats != NULL) && (stats->adc_ref_ok != 0U))
+  {
+    App_LvglUiSetHwStatus(g_ui.adc_ref_status, "ADC OK", lv_color_hex(0x16A34A));
+  }
+  else
+  {
+    App_LvglUiSetHwStatus(g_ui.adc_ref_status, "ADC WAIT", lv_color_hex(0xCA8A04));
   }
 
   if (app_si5351_is_clock_ready())
@@ -460,6 +493,7 @@ static void App_LvglUiRefreshOverallStatus(const moddetect_task_stats_t *stats, 
   const AppDdsStatus *dds_status = AppDDS_GetStatus();
   uint8_t si_ready = app_si5351_is_clock_ready() ? 1U : 0U;
   uint8_t dds_cfg = ((dds_status != NULL) && (dds_status->hw_ready != 0U) && (dds_status->last_err == 0)) ? 1U : 0U;
+  uint8_t adc_ok = ((stats != NULL) && (stats->adc_ref_ok != 0U)) ? 1U : 0U;
 
   if (g_ui.overall_status == NULL)
   {
@@ -482,6 +516,10 @@ static void App_LvglUiRefreshOverallStatus(const moddetect_task_stats_t *stats, 
   else if (si_ready == 0U)
   {
     App_LvglUiSetHwStatus(g_ui.overall_status, "HW WAIT", lv_color_hex(0xCA8A04));
+  }
+  else if (adc_ok == 0U)
+  {
+    App_LvglUiSetHwStatus(g_ui.overall_status, "ADC WAIT", lv_color_hex(0xCA8A04));
   }
   else if ((dds_status != NULL) && (dds_status->last_err != 0))
   {
