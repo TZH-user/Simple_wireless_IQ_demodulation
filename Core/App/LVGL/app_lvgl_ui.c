@@ -335,7 +335,7 @@ void App_LvglUiInit(void)
   lv_obj_align(g_ui.demod_value, LV_ALIGN_TOP_LEFT, 20, 164);
 
   g_ui.ocxo_value = lv_label_create(main_card);
-  lv_label_set_text(g_ui.ocxo_value, "OCXO: 1400 mV  Step: 10 mV");
+  lv_label_set_text(g_ui.ocxo_value, "DDS: --.---MHz  OCXO: ----mV  Step: --mV");
   lv_obj_set_style_text_color(g_ui.ocxo_value, lv_color_hex(0xBFD3EF), 0);
   lv_obj_set_style_text_font(g_ui.ocxo_value, &lv_font_montserrat_14, 0);
   lv_obj_align(g_ui.ocxo_value, LV_ALIGN_TOP_LEFT, 20, 202);
@@ -577,7 +577,9 @@ static void App_LvglUiRefreshOcxoControls(const moddetect_task_stats_t *stats, c
   if ((g_ui.ocxo_value != NULL) && (ocxo_status != NULL))
   {
     lv_label_set_text_fmt(g_ui.ocxo_value,
-                          "OCXO: %lu mV  Step: %lu mV",
+                          "DDS: %lu.%03luMHz  OCXO: %lumV  Step: %lumV",
+                          (unsigned long)(APP_OCXO_CAL_DDS_FREQ_HZ / 1000000UL),
+                          (unsigned long)((APP_OCXO_CAL_DDS_FREQ_HZ % 1000000UL) / 1000UL),
                           (unsigned long)ocxo_status->dac_mv,
                           (unsigned long)ocxo_status->step_mv);
   }

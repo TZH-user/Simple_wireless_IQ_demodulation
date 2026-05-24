@@ -30,6 +30,10 @@
 #define ANALYZE_RESULT_LOG_ENABLE 1U /* 是否输出一次性分析完成日志。 */
 #define ANALYZE_SETTLE_BLOCKS 2U
 #define ANALYZE_SETTLE_LOG_ENABLE 0U
+#define ANALYZE_BASEBAND_SPECTRUM_ENABLE 1U /* 是否缓存 Analyze 后的 ±200kHz 简易基带谱，供 UI 或调试读取。 */
+#define ANALYZE_BASEBAND_SPECTRUM_LOG_ENABLE 0U /* 是否串口逐点输出 bbsp；默认关闭，避免数据集采集被 801 行谱拖慢。 */
+#define ANALYZE_BASEBAND_SPECTRUM_START_HZ (-200000L)
+#define ANALYZE_BASEBAND_SPECTRUM_STEP_HZ 500UL
 
 #define ANALYZE_LOW_IF_EST_ENABLE 1U /* 低中频偏置估计开关，用于观察混频后距离 DC 的残余频偏。 */
 #define ANALYZE_MOD_MIN_FREQ_HZ 500U /* 忽略直流和 1 个 bin 以下的慢漂移，4096 点 FFT 下频率分辨率约 500Hz。 */
@@ -189,10 +193,12 @@ typedef struct
 {
     uint8_t result_pending;    /* 分析完成结果日志等待发送。 */
     uint8_t depth_avg_pending; /* 平均包络深度日志等待发送。 */
+    uint8_t bbsp_pending;      /* 简易基带谱日志等待发送；默认宏关闭时不会置位。 */
     uint8_t summary_stage;     /* 频谱摘要慢速发送阶段：0空闲，1 IQ，2 包络，3 频率类。 */
     uint8_t full_stage;        /* 全量频谱慢速发送阶段：0空闲，1 IQ，2 包络，3 频率类。 */
     uint8_t format_pending;    /* 频谱输出完成后的格式说明日志等待发送。 */
     uint32_t full_bin;         /* 当前全量频谱发送到的 bin。 */
+    uint16_t bbsp_index;       /* 当前 bbsp 发送到的点。 */
 } analyze_log_state_t;
 
 static analyze_state_t g_analyze;
@@ -243,6 +249,10 @@ __attribute__((section(".ram_d1_buffer")))
 static float g_phase_spec_mag[ANALYZE_FFT_HALF_N];
 __attribute__((section(".ram_d1_buffer")))
 static float g_phase_spec_phase[ANALYZE_FFT_HALF_N];
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+static int16_t g_baseband_spec_db_x10[ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT];
+static uint8_t g_baseband_spec_valid;
+#endif
 
 static float cumsum_mean(const uint16_t *buf, uint32_t sample_cnt, uint8_t step)
 {
@@ -656,6 +666,81 @@ static uint32_t analyze_abs_diff_i32(int32_t a, int32_t b)
 {
     return (a >= b) ? (uint32_t)(a - b) : (uint32_t)(b - a);
 }
+
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+static uint32_t analyze_signed_hz_to_iq_bin(int32_t freq_hz)
+{
+    uint32_t abs_hz = analyze_abs_i32(freq_hz);
+    uint32_t bin = (abs_hz + (ANALYZE_BASEBAND_SPECTRUM_STEP_HZ / 2UL)) /
+                   ANALYZE_BASEBAND_SPECTRUM_STEP_HZ;
+
+    if (bin > ANALYZE_FFT_HALF_N)
+    {
+        bin = ANALYZE_FFT_HALF_N;
+    }
+
+    if (freq_hz < 0)
+    {
+        return (bin == 0U) ? 0U : (ANALYZE_FFT_N - bin);
+    }
+
+    return bin;
+}
+
+/* 缓存 Analyze 完成后的双边基带谱，频率顺序固定为 -200kHz 到 +200kHz。 */
+static void analyze_update_baseband_spectrum(void)
+{
+    float peak_mag = 0.0f;
+    uint16_t idx;
+
+    for (idx = 0U; idx < ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT; idx++)
+    {
+        int32_t freq_hz = ANALYZE_BASEBAND_SPECTRUM_START_HZ +
+                          ((int32_t)idx * (int32_t)ANALYZE_BASEBAND_SPECTRUM_STEP_HZ);
+        uint32_t bin = analyze_signed_hz_to_iq_bin(freq_hz);
+        float mag = g_iq_spec_mag[bin];
+
+        if (mag > peak_mag)
+        {
+            peak_mag = mag;
+        }
+    }
+
+    if (peak_mag <= 0.0f)
+    {
+        memset(g_baseband_spec_db_x10, 0, sizeof(g_baseband_spec_db_x10));
+        g_baseband_spec_valid = 0U;
+        return;
+    }
+
+    for (idx = 0U; idx < ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT; idx++)
+    {
+        int32_t freq_hz = ANALYZE_BASEBAND_SPECTRUM_START_HZ +
+                          ((int32_t)idx * (int32_t)ANALYZE_BASEBAND_SPECTRUM_STEP_HZ);
+        uint32_t bin = analyze_signed_hz_to_iq_bin(freq_hz);
+        float ratio = g_iq_spec_mag[bin] / peak_mag;
+        int32_t db_x10;
+
+        if (ratio < 0.000001f)
+        {
+            ratio = 0.000001f;
+        }
+
+        db_x10 = (int32_t)(200.0f * log10f(ratio));
+        if (db_x10 < -1200L)
+        {
+            db_x10 = -1200L;
+        }
+        if (db_x10 > 0L)
+        {
+            db_x10 = 0L;
+        }
+        g_baseband_spec_db_x10[idx] = (int16_t)db_x10;
+    }
+
+    g_baseband_spec_valid = 1U;
+}
+#endif
 
 static uint8_t analyze_near_u32(uint32_t value_hz, uint32_t target_hz, uint32_t tol_hz)
 {
@@ -1876,6 +1961,9 @@ static void analyze_process_spectra(void)
 #if (ANALYZE_IQ_SPECTRUM_ENABLE != 0U)
     {
         g_iq_peak = analyze_process_iq_spectrum();
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+        analyze_update_baseband_spectrum();
+#endif
     }
 #endif
 
@@ -2025,6 +2113,14 @@ static void analyze_log_prepare_after_done(void)
     g_analyze_log.depth_avg_pending = 1U;
 #endif
 
+#if ((ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U) && (ANALYZE_BASEBAND_SPECTRUM_LOG_ENABLE != 0U))
+    if (g_baseband_spec_valid != 0U)
+    {
+        g_analyze_log.bbsp_pending = 1U;
+        g_analyze_log.bbsp_index = 0U;
+    }
+#endif
+
 #if (ANALYZE_SPECTRUM_SUMMARY_LOG_ENABLE != 0U)
     g_analyze_log.summary_stage = 1U;
     analyze_advance_summary_stage();
@@ -2063,6 +2159,44 @@ static uint8_t analyze_log_emit_summary_once(void)
     analyze_advance_summary_stage();
     return 1U;
 }
+
+#if ((ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U) && (ANALYZE_BASEBAND_SPECTRUM_LOG_ENABLE != 0U))
+static uint8_t analyze_log_emit_bbsp_once(void)
+{
+    char log_buf[80];
+    int n;
+    uint16_t idx = g_analyze_log.bbsp_index;
+    int32_t freq_hz;
+
+    if ((g_analyze_log.bbsp_pending == 0U) || (g_baseband_spec_valid == 0U))
+    {
+        return 0U;
+    }
+
+    if (idx >= ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT)
+    {
+        g_analyze_log.bbsp_pending = 0U;
+        g_analyze_log.bbsp_index = 0U;
+        return 0U;
+    }
+
+    freq_hz = ANALYZE_BASEBAND_SPECTRUM_START_HZ +
+              ((int32_t)idx * (int32_t)ANALYZE_BASEBAND_SPECTRUM_STEP_HZ);
+    n = snprintf(log_buf,
+                 sizeof(log_buf),
+                 "bbsp:%ld,%d,%u\r\n",
+                 (long)freq_hz,
+                 (int)g_baseband_spec_db_x10[idx],
+                 (unsigned int)idx);
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        analyze_log_send(log_buf);
+    }
+
+    g_analyze_log.bbsp_index++;
+    return 1U;
+}
+#endif
 
 static uint8_t analyze_log_emit_full_once(void)
 {
@@ -2129,6 +2263,9 @@ void analyze_start(uint32_t center_hz)
 
     memset(&g_analyze, 0, sizeof(g_analyze));
     memset(&g_analyze_log, 0, sizeof(g_analyze_log));
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+    g_baseband_spec_valid = 0U;
+#endif
     g_analyze.active = 1U;
     g_analyze.done = 0U;
     g_analyze.center_hz = center_hz;
@@ -2233,6 +2370,26 @@ void analyze_get_result(analyze_result_t *result_out)
     result_out->param_confidence_pm = g_analyze.param_confidence_pm;
 }
 
+uint8_t analyze_get_baseband_spectrum(analyze_baseband_spectrum_view_t *view_out)
+{
+    if (view_out == NULL)
+    {
+        return 0U;
+    }
+
+    memset(view_out, 0, sizeof(*view_out));
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+    view_out->start_hz = ANALYZE_BASEBAND_SPECTRUM_START_HZ;
+    view_out->step_hz = ANALYZE_BASEBAND_SPECTRUM_STEP_HZ;
+    view_out->count = ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT;
+    view_out->db_x10 = g_baseband_spec_db_x10;
+    view_out->valid = g_baseband_spec_valid;
+    return g_baseband_spec_valid;
+#else
+    return 0U;
+#endif
+}
+
 uint8_t analyze_is_active(void)
 {
     return g_analyze.active;
@@ -2243,6 +2400,7 @@ uint8_t analyze_log_is_busy(void)
 #if (ANALYZE_LOG_ENABLE != 0U)
     if ((g_analyze_log.result_pending != 0U) ||
         (g_analyze_log.depth_avg_pending != 0U) ||
+        (g_analyze_log.bbsp_pending != 0U) ||
         (g_analyze_log.summary_stage != 0U) ||
         (g_analyze_log.full_stage != 0U) ||
         (g_analyze_log.format_pending != 0U))
@@ -2280,6 +2438,14 @@ void analyze_log_flush_step(uint8_t max_lines)
             sent++;
             continue;
         }
+
+#if ((ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U) && (ANALYZE_BASEBAND_SPECTRUM_LOG_ENABLE != 0U))
+        if (analyze_log_emit_bbsp_once() != 0U)
+        {
+            sent++;
+            continue;
+        }
+#endif
 
         if (analyze_log_emit_summary_once() != 0U)
         {

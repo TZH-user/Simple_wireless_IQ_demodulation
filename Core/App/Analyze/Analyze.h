@@ -42,12 +42,24 @@ typedef struct
     uint16_t param_confidence_pm;
 } analyze_result_t;
 
+#define ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT 801U
+
+typedef struct
+{
+    int32_t start_hz;
+    uint32_t step_hz;
+    uint16_t count;
+    const int16_t *db_x10;
+    uint8_t valid;
+} analyze_baseband_spectrum_view_t;
+
 void analyze_start(uint32_t center_hz);
 uint8_t analyze_process_block(const uint16_t *i_buf,
                               const uint16_t *q_buf,
                               uint32_t sample_cnt);
 
 void analyze_get_result(analyze_result_t *result_out);
+uint8_t analyze_get_baseband_spectrum(analyze_baseband_spectrum_view_t *view_out);
 uint8_t analyze_is_done(void);
 uint8_t analyze_is_active(void);
 uint8_t analyze_log_is_busy(void);

@@ -1,0 +1,3 @@
+﻿run_id,modulation,power_dbm,target_freq_hz,center_hz,center_error_hz,detected_mode,valid,raw_log_path,notes
+"CW_120M_-15dBm_run1","CW",-15,120000000,"0","-120000000","","False","D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\agent_workspace\120MHz_dataset_raw_single_CW_120M_m15_m10_blocked_20260525_0230\CW_120M_-15dBm_run1_reject.txt",""
+"CW_120M_-10dBm_run1","CW",-10,120000000,"0","-120000000","","False","D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\agent_workspace\120MHz_dataset_raw_single_CW_120M_m15_m10_blocked_20260525_0230\CW_120M_-10dBm_run1_reject.txt",""

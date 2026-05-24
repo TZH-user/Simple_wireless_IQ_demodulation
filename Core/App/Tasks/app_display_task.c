@@ -1,5 +1,6 @@
 #include "cmsis_os2.h"
 
+#include "../BootAnim/app_boot_anim.h"
 #include "app_display.h"
 #include "app_lvgl.h"
 #include "app_touch_gt9xx.h"
@@ -21,6 +22,7 @@ void StartDisplayTask(void *argument)
   /* 显示主线只负责显示/LVGL，不承担触摸 IIC 访问，减少职责耦合。 */
   App_DisplayInit();
   App_DisplayRunPowerOnPattern();
+  App_BootAnimPlay();
   App_LvglInit();
 
   /*

@@ -185,7 +185,7 @@ void APP_AD9959_SetQuadPhaseDeg(uint32_t freq_hz, uint16_t amp)
 void APP_AD9959_InitDefault4Ch(void)
 {
   AD9959_Init();
-  APP_AD9959_SetQuadPhaseDeg(APP_AD9959_DEFAULT_FREQ_HZ, APP_AD9959_DEFAULT_AMP_CODE);
+  APP_AD9959_SetQuadPhaseDeg(APP_AD9959_DEFAULT_FREQ_HZ, APP_AD9959_STARTUP_AMP_CODE);
 }
 
 /* 把 4 个通道统一设置为相同频率。

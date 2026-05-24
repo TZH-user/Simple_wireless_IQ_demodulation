@@ -16,12 +16,14 @@
 
 /* 默认输出计划集中放在任务层，后续切版本或切板级频点时只改这里即可。 */
 static const app_si5351_output_cfg_t g_app_si5351_default_plan[] = {
+    {1U, 65000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
     {2U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
+    {3U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
 #if APP_SI5351_SELECTED_VARIANT == APP_SI5351_VARIANT_BASIC
     /* basic 版本不支持强制绑 PLLB，这里必须退回 AUTO。 */
-    {2U, 20480000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
+    {0U, 20480000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
 #else
-    /* pro/promax 版本允许把 2.048 MHz 独立挂到 PLLB。 */
+    /* pro/promax 版本允许把 20.48 MHz 独立挂到 PLLB；25/50 MHz 继续留在默认 PLLA 整数分频。 */
     {0U, 20480000UL, APP_SI5351_PLL_PLLB, APP_SI5351_DRIVE_DEFAULT, true},
 #endif
 };

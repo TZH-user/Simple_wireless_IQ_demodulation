@@ -23,7 +23,15 @@
 #define APP_FB_SIZE_BYTES              (APP_LCD_HOR_RES * APP_LCD_VER_RES * APP_LCD_PIXEL_SIZE_BYTES)
 #define APP_FB_END_ADDR                (APP_FB_ADDR + APP_FB_SIZE_BYTES)
 
-#define APP_SDRAM_TEST_ADDR            0xC0100000UL
+/*
+ * 开机动画使用第二块 framebuffer 做双缓冲，动画结束后 LTDC 会切回
+ * APP_FB_ADDR，LVGL 仍然只接管原来的主 framebuffer。
+ */
+#define APP_BOOT_FB_ADDR               APP_FB_END_ADDR
+#define APP_BOOT_FB_SIZE_BYTES         APP_FB_SIZE_BYTES
+#define APP_BOOT_FB_END_ADDR           (APP_BOOT_FB_ADDR + APP_BOOT_FB_SIZE_BYTES)
+
+#define APP_SDRAM_TEST_ADDR            0xC0180000UL
 #define APP_SDRAM_TEST_SIZE_BYTES      (256U * 1024U)
 #define APP_SDRAM_TEST_END_ADDR        (APP_SDRAM_TEST_ADDR + APP_SDRAM_TEST_SIZE_BYTES)
 

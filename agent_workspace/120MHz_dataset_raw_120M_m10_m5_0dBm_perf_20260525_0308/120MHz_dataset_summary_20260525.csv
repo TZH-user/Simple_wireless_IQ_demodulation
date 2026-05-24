@@ -1,0 +1,6 @@
+﻿run_id,modulation,power_dbm,target_freq_hz,center_hz,center_error_hz,detected_mode,valid,raw_log_path,notes
+"CW_120M_-10dBm_run1","CW",-10,120000000,"120000000","0","0","True","D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\agent_workspace\120MHz_dataset_raw_120M_m10_m5_0dBm_perf_20260525_0308\CW_120M_-10dBm_run1_valid.txt",""
+"CW_120M_-10dBm_run2","CW",-10,120000000,"120000000","0","0","True","D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\agent_workspace\120MHz_dataset_raw_120M_m10_m5_0dBm_perf_20260525_0308\CW_120M_-10dBm_run2_valid.txt",""
+"CW_120M_-10dBm_run3","CW",-10,120000000,"120000000","0","0","True","D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\agent_workspace\120MHz_dataset_raw_120M_m10_m5_0dBm_perf_20260525_0308\CW_120M_-10dBm_run3_valid.txt",""
+"CW_120M_-5dBm_run1","CW",-5,120000000,"120000000","0","0","True","D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\agent_workspace\120MHz_dataset_raw_120M_m10_m5_0dBm_perf_20260525_0308\CW_120M_-5dBm_run1_valid.txt",""
+"CW_120M_-5dBm_run2","CW",-5,120000000,"120000000","0","0","True","D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\agent_workspace\120MHz_dataset_raw_120M_m10_m5_0dBm_perf_20260525_0308\CW_120M_-5dBm_run2_valid.txt",""

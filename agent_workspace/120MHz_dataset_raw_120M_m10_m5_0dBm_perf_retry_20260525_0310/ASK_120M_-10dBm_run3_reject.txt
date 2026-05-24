@@ -1,0 +1,8 @@
+﻿fw_id,IQ_Sweep_test,build=20260523_05:36,ask=virtual_cd_rd,psk=fm_guard_psk
+dds: wait si5351 refclk
+ocxo:flash,load,1
+cal:flash,load,1
+si5351: ready addr=0x61 variant=promax port=hal_i2c plan=clk1=50000000Hz clk2=25000000Hz clk3=25000000Hz clk0=20480000Hz
+dds: si5351 refclk ready
+dds: init done hw=1 ch=0 dirty=0x00 err=0
+

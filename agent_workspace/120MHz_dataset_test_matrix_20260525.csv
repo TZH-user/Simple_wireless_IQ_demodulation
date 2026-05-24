@@ -1,0 +1,7 @@
+test_id,modulation,target_freq_hz,start_power_dbm,max_auto_power_dbm,analog_mod_rate_hz,analog_depth_percent,analog_fm_deviation_hz,symbol_rate_sps,digital_filter,digital_data,differential_encoding,valid_center_tol_hz,repeats,notes
+CW_120M,CW,120000000,-20,-10,,,,,,,,300000,3,RF carrier only; modulation off; custom digital off
+AM_120M,AM,120000000,-20,-10,10000,50,,,,,,300000,3,Analog AM; 10kHz internal sine; 50 percent depth
+FM_120M,FM,120000000,-20,-10,10000,,75000,,,,,300000,3,Analog FM; 10kHz internal sine; 75kHz deviation
+ASK_120M,ASK,120000000,-20,-10,,,,10000,RECT,loop01,off,300000,3,Custom ASK; 100 percent depth; 01 loop data
+FSK_120M,FSK2,120000000,-20,-10,,,,10000,RECT,loop01,off,300000,3,Custom FSK2; 20kHz deviation; 01 loop data
+BPSK_120M,BPSK,120000000,-20,-10,,,,10000,RECT,loop01,off,300000,3,Custom BPSK; differential encoding off unless instrument rejects it

@@ -133,7 +133,7 @@ static void moddetect_request_dds_reinit(void)
 #endif
 }
 
-/* 进入恒温晶振校准时，让 AD9959 CH0 输出固定 125MHz 参考信号。 */
+/* 进入恒温晶振校准时，让 AD9959 指定通道输出固定参考频率；具体值由 APP_OCXO_CAL_DDS_FREQ_HZ 决定。 */
 static void moddetect_request_ocxo_dds_output(void)
 {
     AppDdsCmd cmd;

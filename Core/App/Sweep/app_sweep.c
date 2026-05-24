@@ -24,7 +24,7 @@
 /* 候选、封锁和细扫参数保持为编译期常量，便于实机快速切换。 */
 #define APP_SWEEP_COARSE_STEP_HZ APP_SWEEP_DEFAULT_STEP_HZ /* 粗扫每次跳多少 Hz；置 0 时才使用函数传入的步进。 */
 #define APP_SWEEP_MAX_CANDIDATES 16U              /* 每轮最多保留和打印多少个候选段。 */
-#define APP_SWEEP_BLOCK_MATCH_MIN_TOL_HZ 10000UL  /* 候选频率离封锁频率这么近就丢弃，单位 Hz。 */
+#define APP_SWEEP_BLOCK_MATCH_MIN_TOL_HZ 300000UL /* 候选频率离封锁频率这么近就丢弃，单位 Hz；现场强电台会有裙边，不能只挡中心点。 */
 #define APP_SWEEP_CANDIDATE_LOG_ENABLE 1U         /* 是否打印候选汇总和候选明细，便于现场核对锁点。 */
 #define APP_SWEEP_CANDIDATE_DEBUG_LOG_ENABLE 1U   /* 是否额外打印候选段、双峰和谷点，方便核对算法。 */
 #define APP_SWEEP_CANDIDATE_BRIDGE_GAP_STEPS 2U   /* 候选段中间短暂掉下阈值时，最多允许跨过几个点继续合并。 */
@@ -34,6 +34,7 @@
 #define APP_SWEEP_CANDIDATE_WIDE_CONVEX_MID_STEPS 5U /* 非凹谷、非平台但候选段足够宽时，取段中点，减少宽信号锁到肩峰。 */
 #define APP_SWEEP_CANDIDATE_MAX_CONVEX_WIDTH_STEPS 10U /* 非凹谷、非平台的凸峰太宽时更像环境宽干扰，超过该宽度直接丢弃。 */
 #define APP_SWEEP_FINE_HOLD_COARSE_MIN_WIDTH_STEPS 5U /* 细扫宽凸峰容易被调制瞬时峰值拉偏；达到该宽度时优先沿用粗扫中心。 */
+#define APP_SWEEP_FINE_FALLBACK_TO_COARSE_ENABLE 1U /* 细扫没有有效候选时是否回退到粗扫中心，避免弱目标被细扫空结果误判为未锁定。 */
 #define APP_SWEEP_CANDIDATE_MIN_PEAK_VPP 3500UL    /* 任务扫频候选的最低峰值；低于它的候选直接不要。 */
 #define APP_SWEEP_CANDIDATE_MIN_SCORE_VPP 2500UL  /* 任务扫频候选至少要比底噪高这么多；低于它直接不要。 */
 #define APP_SWEEP_CAL_BASELINE_MIN_VPP 4000UL     /* 只管校准扣减：校准点高于它，任务扫频才会在附近做基线扣减；它不是候选剔除门限。 */
@@ -53,6 +54,8 @@
 #define APP_SWEEP_CAL_FLASH_MAGIC 0x53574341UL    /* Flash 校准记录标识，防止误读其他数据。 */
 #define APP_SWEEP_CAL_FLASH_VERSION 1UL           /* Flash 校准记录版本，结构变化时递增。 */
 #define APP_SWEEP_CAL_FLASH_CRC_SEED 2166136261UL /* 校准记录校验种子，用于判断掉电数据是否完整。 */
+
+#define APP_SWEEP_BLOCK_THRESHOLD_IGNORE_HZ 300000UL /* 封锁频点附近这么宽不参与全局阈值估计，避免强电台抬高门槛。 */
 
 typedef enum
 {
@@ -164,8 +167,8 @@ static app_sweep_cal_flash_record_t g_sweep_cal_flash_record;
 /* 频率封锁表：按 Hz 填写；0UL 为占位值，会被匹配逻辑忽略。 */
 static const uint32_t g_sweep_block_freq_hz[] =
 {
-    0UL
-    //1250000UL,112200000,112300000,125000000UL
+    112500000UL, /* 现场固定电台，避免任务扫频误锁到 112.5 MHz。 */
+    125000000UL  /* 现场固定电台，避免任务扫频误锁到 125 MHz。 */
 };
 
 static uint16_t sweep_step_count(uint32_t start_hz, uint32_t stop_hz, uint32_t step_hz);
@@ -208,6 +211,7 @@ static uint8_t sweep_candidate_is_concave(uint16_t peak_step,
                                           uint32_t second_peak_vpp,
                                           uint32_t valley_vpp);
 static uint32_t sweep_candidate_tol_hz(void);
+static uint8_t sweep_step_ignored_for_threshold(uint16_t step_index);
 static uint32_t sweep_abs_diff_u32(uint32_t a, uint32_t b);
 static void sweep_finish_no_center(void);
 static uint8_t sweep_try_retry(void);
@@ -636,6 +640,22 @@ static uint32_t sweep_candidate_tol_hz(void)
 }
 
 /* 检查候选频率是否落入封锁表容差范围，并回填命中的封锁频率。 */
+/* 阈值估计时跳过封锁频点附近，避免强干扰参与 peak/valley 估计。 */
+static uint8_t sweep_step_ignored_for_threshold(uint16_t step_index)
+{
+    uint32_t freq_hz;
+    uint32_t tol_hz = sweep_candidate_tol_hz();
+    uint32_t dummy_block_hz;
+
+    if (tol_hz < APP_SWEEP_BLOCK_THRESHOLD_IGNORE_HZ)
+    {
+        tol_hz = APP_SWEEP_BLOCK_THRESHOLD_IGNORE_HZ;
+    }
+
+    freq_hz = sweep_freq_at(g_sweep.stage_start_hz, g_sweep.stage_step_hz, step_index);
+    return sweep_is_blocked_freq(freq_hz, tol_hz, &dummy_block_hz);
+}
+
 static uint8_t sweep_is_blocked_freq(uint32_t freq_hz, uint32_t tol_hz, uint32_t *block_hz_out)
 {
     uint32_t idx;
@@ -1207,6 +1227,9 @@ static uint32_t sweep_eval_stage(uint8_t *found_out)
     app_sweep_candidate_t log_candidates[APP_SWEEP_MAX_CANDIDATES];
     uint32_t rise_vpp;
     uint32_t threshold_vpp;
+    uint32_t eval_peak_vpp;
+    uint32_t eval_valley_vpp;
+    uint8_t eval_valid = 0U;
     uint16_t idx;
     uint16_t log_count = 0U;
     uint16_t total_count = 0U;
@@ -1229,13 +1252,41 @@ static uint32_t sweep_eval_stage(uint8_t *found_out)
         return 0UL;
     }
 
-    rise_vpp = g_sweep.peak_vpp - g_sweep.valley_vpp;
+    eval_peak_vpp = 0UL;
+    eval_valley_vpp = 0xFFFFFFFFUL;
+    for (idx = 0U; idx < g_sweep.step_count; idx++)
+    {
+        if (sweep_step_ignored_for_threshold(idx) != 0U)
+        {
+            continue;
+        }
+
+        if (g_sweep.vpp_table[idx] > eval_peak_vpp)
+        {
+            eval_peak_vpp = g_sweep.vpp_table[idx];
+        }
+
+        if (g_sweep.vpp_table[idx] < eval_valley_vpp)
+        {
+            eval_valley_vpp = g_sweep.vpp_table[idx];
+        }
+
+        eval_valid = 1U;
+    }
+
+    if (eval_valid == 0U)
+    {
+        eval_peak_vpp = g_sweep.peak_vpp;
+        eval_valley_vpp = g_sweep.valley_vpp;
+    }
+
+    rise_vpp = eval_peak_vpp - eval_valley_vpp;
     if (rise_vpp >= APP_SWEEP_MIN_RISE_RAW)
     {
-        threshold_vpp = g_sweep.valley_vpp + (rise_vpp >> APP_SWEEP_THRESHOLD_SHIFT);
-        if ((threshold_vpp - g_sweep.valley_vpp) < APP_SWEEP_MIN_RISE_RAW)
+        threshold_vpp = eval_valley_vpp + (rise_vpp >> APP_SWEEP_THRESHOLD_SHIFT);
+        if ((threshold_vpp - eval_valley_vpp) < APP_SWEEP_MIN_RISE_RAW)
         {
-            threshold_vpp = g_sweep.valley_vpp + APP_SWEEP_MIN_RISE_RAW;
+            threshold_vpp = eval_valley_vpp + APP_SWEEP_MIN_RISE_RAW;
         }
 
         idx = 0U;
@@ -1600,6 +1651,17 @@ uint32_t app_sweep_find_center_hz(uint32_t start_hz,
 
     if (found == 0U)
     {
+#if (APP_SWEEP_FINE_FALLBACK_TO_COARSE_ENABLE != 0U)
+        if ((g_sweep.stage == APP_SWEEP_STAGE_FINE) && (g_sweep.coarse_center_hz != 0UL))
+        {
+            g_sweep.center_hz = g_sweep.coarse_center_hz;
+            g_sweep.stage = APP_SWEEP_STAGE_DONE;
+            g_sweep.active = 0U;
+            sweep_set_dds(g_sweep.center_hz + APP_SWEEP_FINAL_LO_OFFSET_HZ);
+            return g_sweep.center_hz;
+        }
+#endif
+
         if (sweep_try_retry() != 0U)
         {
             return 0U;

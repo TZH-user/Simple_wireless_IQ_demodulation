@@ -71,29 +71,44 @@ static HAL_StatusTypeDef app_si5351_wait_for_sys_init_clear(void)
 
 static void app_si5351_build_plan_summary(const app_si5351_output_cfg_t *cfgs, uint8_t count)
 {
+    uint8_t idx;
+    size_t used = 0U;
+
     if ((cfgs == NULL) || (count == 0U))
     {
         (void)snprintf(g_app_si5351_plan_summary, sizeof(g_app_si5351_plan_summary), "none");
         return;
     }
 
-    if (count == 1U)
+    g_app_si5351_plan_summary[0] = '\0';
+    for (idx = 0U; idx < count; ++idx)
     {
-        (void)snprintf(g_app_si5351_plan_summary,
-                       sizeof(g_app_si5351_plan_summary),
-                       "clk%u=%luHz",
-                       cfgs[0].channel,
-                       (unsigned long)cfgs[0].freq_hz);
-        return;
-    }
+        int written;
 
-    (void)snprintf(g_app_si5351_plan_summary,
-                   sizeof(g_app_si5351_plan_summary),
-                   "clk%u=%luHz clk%u=%luHz",
-                   cfgs[0].channel,
-                   (unsigned long)cfgs[0].freq_hz,
-                   cfgs[1].channel,
-                   (unsigned long)cfgs[1].freq_hz);
+        if (used >= (sizeof(g_app_si5351_plan_summary) - 1U))
+        {
+            break;
+        }
+
+        written = snprintf(&g_app_si5351_plan_summary[used],
+                           sizeof(g_app_si5351_plan_summary) - used,
+                           "%sclk%u=%luHz",
+                           (idx == 0U) ? "" : " ",
+                           cfgs[idx].channel,
+                           (unsigned long)cfgs[idx].freq_hz);
+        if (written <= 0)
+        {
+            break;
+        }
+
+        if ((size_t)written >= (sizeof(g_app_si5351_plan_summary) - used))
+        {
+            g_app_si5351_plan_summary[sizeof(g_app_si5351_plan_summary) - 1U] = '\0';
+            break;
+        }
+
+        used += (size_t)written;
+    }
 }
 
 app_si5351_result_t app_si5351_init_device(void)

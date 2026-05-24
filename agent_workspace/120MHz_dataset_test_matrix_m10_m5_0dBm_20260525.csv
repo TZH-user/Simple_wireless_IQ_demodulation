@@ -1,0 +1,19 @@
+test_id,modulation,target_freq_hz,power_dbm,analog_mod_rate_hz,analog_depth_percent,analog_fm_deviation_hz,symbol_rate_sps,digital_filter,digital_data,differential_encoding,valid_center_tol_hz,repeats,pre_action,post_action,notes
+CW_120M_m10,CW,120000000,-10,,,,,,,,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,RF carrier only; modulation off; custom digital off
+CW_120M_m5,CW,120000000,-5,,,,,,,,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,RF carrier only; modulation off; custom digital off
+CW_120M_0,CW,120000000,0,,,,,,,,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,RF carrier only; modulation off; custom digital off
+AM_120M_m10,AM,120000000,-10,10000,50,,,,,,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Analog AM; 10kHz internal sine; 50 percent depth
+AM_120M_m5,AM,120000000,-5,10000,50,,,,,,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Analog AM; 10kHz internal sine; 50 percent depth
+AM_120M_0,AM,120000000,0,10000,50,,,,,,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Analog AM; 10kHz internal sine; 50 percent depth
+FM_120M_m10,FM,120000000,-10,10000,,75000,,,,,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Analog FM; 10kHz internal sine; 75kHz deviation
+FM_120M_m5,FM,120000000,-5,10000,,75000,,,,,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Analog FM; 10kHz internal sine; 75kHz deviation
+FM_120M_0,FM,120000000,0,10000,,75000,,,,,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Analog FM; 10kHz internal sine; 75kHz deviation
+ASK_120M_m10,ASK,120000000,-10,,,,10000,RECT,loop01,off,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Custom ASK; 100 percent depth; 10ksym/s loop01
+ASK_120M_m5,ASK,120000000,-5,,,,10000,RECT,loop01,off,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Custom ASK; 100 percent depth; 10ksym/s loop01
+ASK_120M_0,ASK,120000000,0,,,,10000,RECT,loop01,off,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Custom ASK; 100 percent depth; 10ksym/s loop01
+FSK_120M_m10,FSK2,120000000,-10,,,,10000,RECT,loop01,off,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Custom FSK2; 20kHz deviation; 10ksym/s loop01
+FSK_120M_m5,FSK2,120000000,-5,,,,10000,RECT,loop01,off,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Custom FSK2; 20kHz deviation; 10ksym/s loop01
+FSK_120M_0,FSK2,120000000,0,,,,10000,RECT,loop01,off,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Custom FSK2; 20kHz deviation; 10ksym/s loop01
+BPSK_120M_m10,BPSK,120000000,-10,,,,10000,RECT,loop01,off,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Custom BPSK; differential encoding off unless instrument rejects it
+BPSK_120M_m5,BPSK,120000000,-5,,,,10000,RECT,loop01,off,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Custom BPSK; differential encoding off unless instrument rejects it
+BPSK_120M_0,BPSK,120000000,0,,,,10000,RECT,loop01,off,300000,3,rf_off_mod_all_off,rf_off_mod_all_off,Custom BPSK; differential encoding off unless instrument rejects it

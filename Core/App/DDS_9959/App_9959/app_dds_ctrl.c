@@ -222,10 +222,10 @@ int AppDDS_Init(void)
   s_dds.freq_hz[2] = APP_AD9959_DEFAULT_FREQ_HZ;
   s_dds.freq_hz[3] = APP_AD9959_DEFAULT_FREQ_HZ;
 
-  s_dds.amp_code[0] = APP_AD9959_DEFAULT_AMP_CODE;
-  s_dds.amp_code[1] = APP_AD9959_DEFAULT_AMP_CODE;
-  s_dds.amp_code[2] = APP_AD9959_DEFAULT_AMP_CODE;
-  s_dds.amp_code[3] = APP_AD9959_DEFAULT_AMP_CODE;
+  s_dds.amp_code[0] = APP_AD9959_STARTUP_AMP_CODE;
+  s_dds.amp_code[1] = APP_AD9959_STARTUP_AMP_CODE;
+  s_dds.amp_code[2] = APP_AD9959_STARTUP_AMP_CODE;
+  s_dds.amp_code[3] = APP_AD9959_STARTUP_AMP_CODE;
 
   s_dds.phase_deg[0] = APP_AD9959_DEFAULT_PHASE_CH0;
   s_dds.phase_deg[1] = APP_AD9959_DEFAULT_PHASE_CH1;

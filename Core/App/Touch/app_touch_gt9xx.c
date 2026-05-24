@@ -38,7 +38,9 @@ typedef struct
 } App_TouchState;
 
 static App_TouchState g_touch_state = {0};
-static uint8_t g_touch_inited = 0U;
+static volatile uint8_t g_touch_inited = 0U;
+static volatile uint8_t g_touch_irq_latched = 0U;
+static volatile uint8_t g_touch_valid_latched = 0U;
 static TaskHandle_t g_touch_task_handle = NULL;
 
 static void App_TouchSetIntAsOutput(void);
@@ -63,6 +65,9 @@ bool App_TouchInit(void)
   uint8_t product_id[4] = {0};
 
   /* 软件 IIC 空闲态必须保持高电平，先释放总线再做复位时序。 */
+  App_TouchClearState();
+  (void)App_TouchConsumeInterruptFlag();
+
   HAL_GPIO_WritePin(APP_TOUCH_I2C_SCL_PORT, APP_TOUCH_I2C_SCL_PIN, GPIO_PIN_SET);
   HAL_GPIO_WritePin(APP_TOUCH_I2C_SDA_PORT, APP_TOUCH_I2C_SDA_PIN, GPIO_PIN_SET);
   HAL_GPIO_WritePin(APP_TOUCH_RST_PORT, APP_TOUCH_RST_PIN, GPIO_PIN_SET);
@@ -71,16 +76,20 @@ bool App_TouchInit(void)
 
   if(App_TouchGt9xxReadReg(APP_TOUCH_GT9XX_REG_PRODUCT_ID, product_id, sizeof(product_id)) != HAL_OK) {
     g_touch_inited = 0U;
+    App_TouchClearState();
     return false;
   }
 
   if(product_id[0] != (uint8_t)'9') {
     g_touch_inited = 0U;
+    App_TouchClearState();
     return false;
   }
 
   taskENTER_CRITICAL();
   memset(&g_touch_state, 0, sizeof(g_touch_state));
+  g_touch_irq_latched = 0U;
+  g_touch_valid_latched = 0U;
   g_touch_inited = 1U;
   taskEXIT_CRITICAL();
 
@@ -126,6 +135,37 @@ uint8_t App_TouchGetPointCount(void)
   return count;
 }
 
+bool App_TouchIsInitialized(void)
+{
+  return (g_touch_inited != 0U);
+}
+
+bool App_TouchHasValidTouch(void)
+{
+  return (g_touch_valid_latched != 0U);
+}
+
+void App_TouchClearState(void)
+{
+  taskENTER_CRITICAL();
+  memset(&g_touch_state, 0, sizeof(g_touch_state));
+  g_touch_irq_latched = 0U;
+  g_touch_valid_latched = 0U;
+  taskEXIT_CRITICAL();
+}
+
+bool App_TouchConsumeInterruptFlag(void)
+{
+  uint8_t latched = 0U;
+
+  taskENTER_CRITICAL();
+  latched = g_touch_irq_latched;
+  g_touch_irq_latched = 0U;
+  taskEXIT_CRITICAL();
+
+  return (latched != 0U);
+}
+
 void App_TouchNotifyFromISR(uint16_t gpio_pin)
 {
   BaseType_t higher_priority_woken = pdFALSE;
@@ -134,6 +174,15 @@ void App_TouchNotifyFromISR(uint16_t gpio_pin)
   if(gpio_pin != APP_TOUCH_INT_PIN) {
     return;
   }
+
+  /*
+   * 初始化完成前的 INT 边沿只唤醒 TouchTask，不作为动画打断依据。
+   * 这样可以屏蔽 GT9xx 复位、INT 模式切换和上电毛刺。
+   */
+  if(g_touch_inited != 0U) {
+    g_touch_irq_latched = 1U;
+  }
+
   if(g_touch_task_handle == NULL) {
     return;
   }
@@ -210,6 +259,8 @@ static void App_TouchGt9xxReset(void)
   HAL_Delay(60);
 
   App_TouchSetIntAsExti();
+  __HAL_GPIO_EXTI_CLEAR_IT(APP_TOUCH_INT_PIN);
+  g_touch_irq_latched = 0U;
   HAL_Delay(10);
 }
 
@@ -250,12 +301,14 @@ static void App_TouchGt9xxReadAndUpdateState(void)
     g_touch_state.points = points;
     g_touch_state.x = x;
     g_touch_state.y = y;
+    g_touch_valid_latched = 1U;
     taskEXIT_CRITICAL();
   }
   else {
     taskENTER_CRITICAL();
     g_touch_state.touched = 0U;
     g_touch_state.points = 0U;
+    g_touch_valid_latched = 0U;
     taskEXIT_CRITICAL();
   }
 

@@ -31,6 +31,11 @@ void RxDemod_FSK_ProcessBlock(const uint16_t *i_adc,
                               uint32_t n,
                               uint16_t *dac_out);
 
+void RxDemod_ASK_ProcessBlock(const uint16_t *i_adc,
+                              const uint16_t *q_adc,
+                              uint32_t n,
+                              uint16_t *dac_out);
+
 void RxDemod_AM_ProcessBlock(const uint16_t *i_adc,
                           const uint16_t *q_adc,
                           uint32_t n,

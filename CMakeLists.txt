@@ -70,6 +70,7 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+    Core/App/BootAnim/app_boot_anim.c
     Core/App/LTDC/app_display.c
     Core/App/SDRAM/app_sdram_test.c
     Core/App/Tasks/app_display_task.c
@@ -111,6 +112,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+    Core/App/BootAnim
     Core/App/LTDC
     Core/App/SDRAM
     Core/App/Touch
