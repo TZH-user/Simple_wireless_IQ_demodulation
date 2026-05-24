@@ -11,7 +11,8 @@ typedef enum
 {
     MODDETECT_RUN_IDLE = 0,
     MODDETECT_RUN_CALIBRATION,
-    MODDETECT_RUN_TASK
+    MODDETECT_RUN_TASK,
+    MODDETECT_RUN_OCXO_CAL
 } moddetect_run_mode_t;
 
 typedef enum
@@ -20,7 +21,8 @@ typedef enum
     MODDETECT_CAL_HISTORY,
     MODDETECT_CAL_RUNNING,
     MODDETECT_CAL_CURRENT,
-    MODDETECT_CAL_SAVING
+    MODDETECT_CAL_SAVING,
+    MODDETECT_CAL_SAVE_OK
 } moddetect_cal_state_t;
 
 typedef struct

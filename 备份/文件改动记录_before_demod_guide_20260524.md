@@ -1,0 +1,622 @@
+# 文件改动记录
+
+# 2026-05-23 ASK/FSK 判别规则微调
+- 备份当前分析文件到 `备份/`：
+  - `Analyze_before_ask_fsk_rule_tune_20260523_031651.c`
+  - `Analyze_h_before_ask_fsk_rule_tune_20260523_031651.h`
+- 修改 `Core/App/Analyze/Analyze.c`
+  - 新增 `ANALYZE_AM_ENV_MIN_FREQ_HZ`，低于 `3kHz` 的包络峰不再作为 AM/ASK 主判据，避免 FSK 的低频包络毛刺触发 AM。
+  - 将 `ANALYZE_ASK_DEPTH_MIN_PM` 调整为 `700pm`，ASK 包络深度明显时优先进入 ASK 路径。
+  - 新增 `ANALYZE_FSK_LOW_DEPTH_THIRD_IGNORE_PM`，包络深度较低时不再因第三强峰过强直接否决 FSK，用于兼容 FSK 中残留载波或镜像峰。
+  - AM 窄带包络规则恢复优先于 FSK，避免真实 AM 因 IQ 双边结构被 FSK 抢判。
+  - Debug 构建通过。
+
+# 2026-05-23 低中频校验与锁点一次修正
+- 备份当前相关文件到 `备份/`：
+  - `Analyze_before_low_if_correction_20260523_025900.c`
+  - `Analyze_h_before_low_if_correction_20260523_025900.h`
+  - `ModDetectTask_before_low_if_correction_20260523_025900.c`
+  - `app_sweep_before_low_if_correction_20260523_025900.c`
+  - `app_sweep_h_before_low_if_correction_20260523_025900.h`
+- 修改 `Core/App/Sweep/app_sweep.h`、`Core/App/Sweep/app_sweep.c`
+  - 将 `APP_SWEEP_FINAL_LO_OFFSET_HZ` 变成可被任务层复用的宏，避免低中频校验目标值重复写死。
+- 修改 `Core/App/Analyze/Analyze.h`、`Core/App/Analyze/Analyze.c`
+  - `analyze_result_t` 新增 `low_if_hz`，供任务层判断分析结果对应的锁点是否可信。
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - 新增低中频有效性校验：分析完成后若 `low_if` 距离目标 `5kHz` 超过 `30kHz`，判定锁点偏差过大。
+  - 偏差过大时只触发一次中心修正：`new_center = old_center + (target_low_if - measured_low_if)`，单次修正限幅 `±200kHz` 并限制在默认扫频范围内。
+  - 修正后重新设置 DDS 最终 LO 并重新启动 `analyze_start()`，不重跑整段扫频。
+  - 新增日志 `moddetect: low_if correction old=... new=... low_if=... target=...`，便于现场确认是否触发修正。
+  - Debug 构建通过。
+
+# 2026-05-23 调制识别结果上屏显示
+- 修改 `Core/App/Analyze/Analyze.h`
+  - 新增 `analyze_result_t` 和 `analyze_get_result()`，供 UI 读取最终分析结果。
+- 修改 `Core/App/Analyze/Analyze.c`
+  - 实现 `analyze_get_result()`，只导出最终类型、中心频率、调制参数、包络深度和完成标志。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 检测页新增 `Mode` 与 `Param` 两行结果显示。
+  - 屏幕仅显示最终判别类型和该类型相关参数；不显示谱评分、IQ 带宽、投票数、reason 等调试中间量。
+  - 参数显示规则：AM/ASK 显示调制频率和包络深度，FM 显示调制频率，FSK 显示频差，CW/PSK/UNKNOWN 暂无可靠参数时显示 `--`。
+  - Debug 构建通过。
+
+# 2026-05-23 调制识别谱特征规则改版
+- 备份 `Core/App/Analyze/Analyze.c` 到 `备份/Analyze_before_spectrum_classifier_20260523_020820.c`。
+- 修改 `Core/App/Analyze/Analyze.h`
+  - 在原有枚举末尾追加 `ANALYZE_MODE_FSK`、`ANALYZE_MODE_PSK`，保留原有模式取值顺序。
+- 修改 `Core/App/Analyze/Analyze.c`
+  - 默认打开复数 IQ 双边谱 `ANALYZE_IQ_SPECTRUM_ENABLE`，在现有 4096 点 FFT 下提取 IQ 强峰、强峰数量、粗略占用带宽和 FSK 双峰间隔。
+  - 新增包络谱强峰数量、包络窄带占比、频率谱强峰数量等特征。
+  - 将分析结果从“包络/频率二类投票”改为按块输出调制类型投票，判别顺序为 `FM -> AM -> FSK -> ASK -> PSK -> CW/UNKNOWN`，并加入 CW、FSK、PSK 独立判定。
+  - 扩展 `analyze: result` 日志，追加 IQ 带宽/评分、FSK 频差、各模式投票和命中原因编号，便于现场根据串口日志调参。
+  - Debug 构建通过；打开 IQ CFFT 后 RAM_D2 使用量为 `240 KB / 288 KB`。
+
+# 2026-05-23 扫频细扫中心估计调整
+- 备份 `Core/App/Sweep/app_sweep.c` 到 `备份/app_sweep_before_center_algorithm_20260523_000000.c`。
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 新增 `APP_SWEEP_FINE_HOLD_COARSE_MIN_WIDTH_STEPS`，细扫宽凸峰不再直接取瞬时最大点。
+  - 新增 `sweep_freq_in_candidate()` 和 `sweep_candidate_convex_freq_hz()`，把凸峰中心估计从候选构建主流程中拆出。
+  - 细扫宽凸峰优先沿用粗扫中心；粗扫中心不在候选段内时才退回候选段中点，降低 FM/FSK/PSK 因瞬时调制峰值导致的锁点抖动。
+
+# 2026-05-22 扫频宽候选锁点微调
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 新增 `APP_SWEEP_CANDIDATE_WIDE_CONVEX_MID_STEPS`，非平台、非凹谷但候选段足够宽时改取段中点，减少 127MHz 宽包络信号锁到 126.9/127.1 肩峰。
+  - 将 `APP_SWEEP_CANDIDATE_LOG_ENABLE` 和 `APP_SWEEP_CANDIDATE_DEBUG_LOG_ENABLE` 打开，便于下一轮串口日志直接核对候选段、双峰、谷点和最终锁点。
+  - 新增 `APP_SWEEP_CANDIDATE_MAX_CONVEX_WIDTH_STEPS`，只过滤过宽的凸峰候选；本次 `122.4~123.4MHz` 宽度 11 个 step 的环境宽干扰会被丢弃，前面 127MHz 常见 5~10 个 step 候选不受影响。
+  - 宽凸峰取中点改为落在粗扫网格上，偶数宽度半步时向右取整；本次 `110.5~111.4MHz` 会锁到 `111.000MHz`，避免被左肩峰拉到 `110.900MHz`。
+  - 开启 `APP_SWEEP_FINE_STAGE_ENABLE`，细扫固定步进改为 `50kHz`，新增 `APP_SWEEP_FINE_HALF_SPAN_HZ=500kHz` 独立控制细扫半宽；过宽凸峰过滤仅用于粗扫，避免细扫点数变多后误删目标。
+  - 细扫阶段的凸峰候选改回取峰顶，不再套用粗扫“宽凸峰取中点”规则；细扫步进已经变小，单峰精定位应由最大点决定，避免 `110.95/111.05MHz` 半步跳动。
+
+## 2026-05-21
+
+- 修改 `Core/App/Sweep/app_sweep.c`、`Core/App/Sweep/app_sweep.h`
+  - 校准差分改为 `max(raw_vpp - baseline_vpp, 0) + baseline_avg_vpp`，避免任务扫频曲线被基线扣减剪到过低。
+  - 新增 `APP_SWEEP_CANDIDATE_MIN_PEAK_VPP` 和 `APP_SWEEP_CANDIDATE_MIN_SCORE_VPP`，低能量候选不再参与最终选择。
+  - 新增 `APP_SWEEP_MAX_RETRY_COUNT` 和 `app_sweep_is_done()`，无有效候选时最多重复粗扫 3 次，失败后返回未锁定完成态。
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - 扫频完成但 `center_hz=0` 时记录未锁定状态并停止本轮任务，不再进入 `analyze_start()`。
+- 修改 `方案与方案改动记录/扫频校准模式任务说明_20260521.md`、`方案与方案改动记录/方案改动记录.md`
+  - 同步记录校准平均值补偿、低能量过滤和未锁定重扫策略。
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 非平台候选不再使用 `APP_SWEEP_CANDIDATE_EDGE_GUARD_STEPS` 跳过边缘后找全段最低点，改为在候选段内寻找两个最高峰，再取两峰之间的最低点作为凹谷型中心频率。
+  - 新增 `APP_SWEEP_CAL_BASELINE_MIN_VPP`，校准基线低于该幅度时不参与任务扫频差分，避免弱底噪基线把任务波形整体扣低。
+- 修改 `方案与方案改动记录/扫频校准模式任务说明_20260521.md`
+  - 同步记录“两峰之间最低点”和“校准基线差分门限”规则。
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 将原来语义混淆的 `APP_SWEEP_FINE_SCAN_ENABLE` 拆分为 `APP_SWEEP_FINE_STAGE_ENABLE` 和 `APP_SWEEP_FINE_FIXED_STEP_ENABLE`。
+  - `APP_SWEEP_FINE_STAGE_ENABLE=0` 时粗扫候选直接作为最终中心，不再进入 `stage=1` 细扫。
+  - `APP_SWEEP_FINE_FIXED_STEP_ENABLE=0` 时才使用 `粗扫步进/6` 作为细扫步进，避免把“关闭固定步进”误认为“关闭细扫”。
+  - 校准逐点日志由 `cal:point,131000000,685,110,0` 改为 `131.000,685,110,0`，删除文本前缀并按 MHz 输出频率，避免 VOFA 将非数字前缀解析成异常曲线。
+
+- 修改 `Core/App/Sweep/app_sweep.c`、`Core/App/Sweep/app_sweep.h`
+  - 新增 RAM 校准基线表和 `app_sweep_calibrate_baseline()`，校准模式只做粗扫并输出校准逐点日志和 `cal:summary`。
+  - 任务扫频在校准网格匹配时使用 `raw_vpp - baseline_vpp` 参与候选判定，无有效校准时自动退回原始 Vpp。
+  - 新增 ADC 近轨检测宏和测量结构，记录每个频点是否出现 `min <= 10` 或 `max >= 16373`。
+- 修改 `Core/App/Tasks/ModDetectTask.c`、`Core/App/Tasks/ModDetectTask.h`
+  - 新增 `MODDETECT_RUN_IDLE / MODDETECT_RUN_CALIBRATION / MODDETECT_RUN_TASK` 运行模式。
+  - 新增 UI 请求接口 `moddetect_task_request_mode()` 和模式读取接口，上电默认不自动扫频。
+  - 校准模式完成后同步 `cal_valid/cal_done/cal_clip_cnt`，任务模式保留扫频后进入 `analyze_start()` 的主链。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 检测页新增 `校准`、`任务` 两个按钮，按钮只请求任务模式，不直接调用扫频算法。
+  - 状态徽标新增 `待选择`、`校准中`、`校准完成`，质量行新增校准状态和 clip 数量。
+- 新增 `方案与方案改动记录/扫频校准模式任务说明_20260521.md`
+  - 记录当前校准模式、任务模式、RAM 基线、ADC clip 检测和测试重点，避免后续上下文压缩后遗漏。
+
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 新增 `APP_SWEEP_CANDIDATE_PLATEAU_DROP_RAW`，用于区分平台型候选和凹谷型候选。
+  - 平台型 FM 候选改为取阈值候选段中点，避免 118MHz 平台因段内峰谷差为 0 被错误降权。
+  - 凹谷型候选继续取避开两侧边界后的段内最低点，保留双肩峰中间低谷的锁定方式。
+  - 候选排序分数改为 `peak_vpp - 本阶段全局最低 Vpp`，分数相同时优先选择更宽候选段，再比较峰值。
+
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 新增 `APP_SWEEP_CANDIDATE_BRIDGE_GAP_STEPS`，允许把同一信号两侧肩峰之间低于阈值的短凹谷合并进同一个候选段。
+  - 修正 FM 双肩峰/中间凹谷场景下，中心最低点被阈值分段排除，导致最终锁到左右肩峰内部点的问题。
+  - 以当前 118MHz 细扫日志为例，`118.000MHz` 低谷会进入合并候选段，后续由段内最低点规则选为最终频点。
+
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 将候选频率选点从段内 Vpp 最大点改为段内 Vpp 最低点。
+  - 新增 `APP_SWEEP_CANDIDATE_EDGE_GUARD_STEPS`，最低点搜索跳过候选段左右边界，避免锁定到两侧掉落点；过窄且没有内部点的候选会被忽略。
+  - 候选排序分数改为 `peak_vpp - 段内最低点 Vpp`，日志中的 `freq_hz` 对应最终选中的段内最低点。
+
+## 2026-05-20
+
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`、`Core/Inc/lv_conf.h`
+  - 将扫频/分析状态改为固定宽度圆角状态徽标，扫频为黄色、分析中为橙色、分析完成为绿色，颜色只作用于状态文字所在矩形。
+  - 状态文字使用 `找信号`、`分析中`、`分析完成`，并启用 `LV_FONT_SOURCE_HAN_SANS_SC_14_CJK` 以保证中文可显示。
+
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 新增 `APP_SWEEP_COARSE_STEP_HZ` 粗扫固定步进宏，默认跟随 `APP_SWEEP_DEFAULT_STEP_HZ`。
+  - 新增 `sweep_coarse_step_hz()` 统一解析粗扫步进，并同步用于启动粗扫和请求变更判断，避免宏值与调用入参不一致时反复重启扫频。
+
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 为候选、封锁、细扫相关宏和内部函数补充 UTF-8 中文注释，仅说明用途、容差和排序规则，不改变扫频行为。
+
+- 修改 `Core/App/Sweep/app_sweep.h`
+  - 默认扫频范围改为 `109000000UL` 到 `131000000UL`。
+  - 默认扫频步进改为 `100000UL`，用于覆盖 115MHz 发射实验并保留 131MHz 终点。
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 增加编译期频率封锁数组 `g_sweep_block_freq_hz[]`，数组内按 Hz 填写封锁频率，`0UL` 作为占位值忽略。
+  - 将阶段完成判定从“首尾过阈值区间”改为完整扫频后提取多个连续过阈值候选区间。
+  - 每个候选取区间内 Vpp 最大点作为候选频率，命中封锁频率容差 `max(stage_step_hz / 2, 1000Hz)` 时丢弃。
+  - 最终选择标准改为未封锁候选的局部峰谷差 `score_vpp = peak_vpp - local_valley_vpp` 最大，而不是单纯 `peak_vpp` 最大。
+  - 增加 `APP_SWEEP_FINE_SCAN_ENABLE` 与 `APP_SWEEP_FINE_STEP_HZ`，默认开启 10kHz 细扫步进，用于提高粗扫候选的最终锁定分辨率。
+  - 若无可用候选，则结束扫频但不设置最终 LO、不进入后续分析。
+  - 保留逐频点日志，并新增 `sweep:summary` 与 `sweep:cand` 候选结果日志，候选日志末尾追加 `score_vpp` 便于现场判断选点依据。
+  - Debug 构建通过。
+
+## 2026-05-20
+
+- 新增 `analysis_reports/频谱分析报告_示例模板_修正版.xlsx`
+  - 修正旧版模板中“测试记录”和“频谱点数据”混放导致后续难以填数的问题。
+  - `测试记录` 仅保留每次实验的一行元数据；`IQ谱数据`、`包络谱数据`、`相位谱数据` 改为长表结构，同一测试编号按每个频点重复填写。
+  - 当前 120MHz CW 三组测试已补齐三类谱数据：IQ 谱 12288 行，包络谱 6144 行，相位展开谱 6144 行。
+  - 新增 `频谱长表` 便于按测试编号、谱类型、频率范围筛选；新增 `T001_图表`、`T002_图表`、`T003_图表`，每次测试分别生成 IQ、包络、相位三张幅度/相位图。
+- 新增 `analysis_reports/频谱分析报告_示例模板_修正版_v2.xlsx`
+  - 修正 `频谱长表` 排列方式，按“测试编号 + 频率 + 频谱类型”交错写入 IQ/包络/相位，避免长表开头看起来与 IQ 谱数据页完全相同。
+  - 新增 `谱点统计` 工作表，明确每组测试的三类谱点数：IQ 4096 点，包络 2048 点，相位 2048 点。
+  - 放大 `T001_图表`、`T002_图表`、`T003_图表` 内三张图，改用数值 X 轴并默认显示 0~200kHz，降低全频段密集标签导致的不可读问题。
+  - 新增 `analysis_reports/build_spectrum_report_v2.py`，用于从三份串口导出日志重新生成修正版 v2 报告。
+- 新增 `analysis_reports/频谱分析报告_示例模板_修正版_v3.xlsx`
+  - 修正 v2 图表轴含义错位问题，将每类谱拆成“幅度-频率”和“相位-频率”两张独立大图，横轴固定为频率 Hz。
+  - 进一步放大图表占位，便于查看低频峰值、相位变化和后续无线测试数据。
+  - 更新 `analysis_reports/build_spectrum_report_v2.py` 输出目标为 v3，并保留完整数据页和 `0~200kHz` 默认图表窗口。
+- 新增 `analysis_reports/频谱分析报告_示例模板_修正版_v4.xlsx`
+  - 修正 v3 图表仍存在位置重叠、相位列取数偏移和 Excel 轴解释异常的问题。
+  - 新增 `图表数据` 工作表，仅提取 0~200kHz 频段供图表使用；完整频谱仍保留在原始三类谱数据页。
+  - 图表改为普通折线图，横轴为频率 Hz，纵轴分别为幅度或相位；相位图固定纵轴范围为 -3.2~3.2 rad，避免相位曲线被幅度量级压扁。
+  - 图表页每类谱拆为幅度图和相位图，并拉大上下间距，避免图表对象重叠。
+- 新增 `analysis_reports/频谱分析报告_示例模板_修正版_v5.xlsx`
+  - 在每类谱的线性幅度图右侧新增幅度对数坐标图，便于同时观察主峰和低幅度杂散/谐波。
+  - 对数幅度图纵轴设置为 log10，最小值设为 1，避免零值导致 Excel 对数坐标失效。
+  - 更新模板说明：每类谱左侧为线性幅度图，右侧为幅度对数坐标图，下方为相位图。
+- 新增 `analysis_reports/convert_spectrum_log_to_csv.py`
+  - 支持将串口导出的 `spec:freq,mag,phase,bin,spec_id` 频谱日志转换为 CSV 长表。
+  - 支持用户通过 `--logs` 选择一个或多个日志来源，多个日志用英文分号分隔。
+  - 支持用户通过 `--out` 自定义输出 CSV 文件名；未传参时进入交互输入。
+  - 输出使用 `utf-8-sig`，便于 Excel 正确识别中文表头。
+- 新增 `analysis_reports/spectrum_log_convert_sample.csv`
+  - 使用三份 120MHz CW 串口导出日志验证 CSV 转换脚本，生成 24576 个频谱点。
+- 修改 `analysis_reports/convert_spectrum_log_to_csv.py`
+  - 未传 `--logs` 或 `--out` 时，优先弹出 Windows 文件选择窗口，避免在命令行里复制粘贴中文路径或长路径。
+  - 保留命令行参数方式，便于后续批量自动化。
+- 新增 `analysis_reports/convert_spectrum_log_to_csv_gui.cmd`
+  - 双击即可启动转换脚本，按弹窗选择一个或多个日志文件，再选择输出文件名。
+  - 当前已改为调用 `convert_spectrum_log_to_xlsx.py`，默认生成真正的 `.xlsx` 频谱报告。
+- 新增 `analysis_reports/spectrum_log_convert_single_test.csv`
+  - 使用单份 120MHz CW 日志回归验证转换脚本，生成 8192 个频谱点。
+- 新增 `analysis_reports/convert_spectrum_log_to_xlsx.py`
+  - 支持从一个或多个串口频谱日志直接生成 `.xlsx` 报告。
+  - 输出包含 `测试记录`、三类谱数据页、`频谱长表`、`图表数据`、`谱点统计` 和每次测试对应图表页。
+  - 图表页保持线性幅度、对数幅度、相位三图结构，默认显示 0~200kHz。
+- 新增 `analysis_reports/spectrum_log_convert_single_test.xlsx`
+  - 使用单份 120MHz CW 日志验证 xlsx 转换脚本，生成 8192 个频谱点。
+- 新增知识库文档 `D:\用户开发习惯与开发经验\ai知识库\Simple_wireless_IQ_串口频谱日志转CSV与Excel报告经验_2026-05-20.md`
+  - 记录本次 CSV/Excel 报告生成经验、推荐工具调用流程、脚本用法、图表生成坑点和后续日志转换流程。
+
+## 2026-05-20
+
+- 新增 `analysis_reports/cw_120MHz_iq_harmonics_report_中文模板.csv`
+  - 将报告字段改为中文列名，保留后续扩展字段（调制类型、调制速率、调制参数、连接方式、峰峰值、直流偏置等）。
+  - 针对当前 IQ 谐波样例补充 `实测相位_rad` 列，便于后续频率/幅度/相位联合比对。
+
+- 新增 `analysis_reports/频谱分析报告_示例模板.xlsx`
+  - 新建工作表：`测试记录`、`IQ谱数据`、`包络谱数据`、`相位谱数据`、`图表页`。
+  - 在 `图表页` 放置三张图（IQ/包络/相位），每张图同时包含幅度与相位两条曲线。
+  - 作为模板使用：某次测试若未输出某个谱，则该谱数据区保持空白，图表对应为空。
+
+## 2026-05-18
+
+- 新增 `stm32_debug_port_guard.cmd`
+  - 增加一键启动脚本，用于双击调用同目录下的 `stm32_debug_port_guard.ps1`。
+  - 支持将命令行附加参数继续传给 PowerShell 脚本，例如 `-ScanOnly`、`-SafeKill`、`-Ports 6000,60000,60001,61234,61235`。
+
+- 新增 `stm32_debug_port_guard.ps1`
+  - 增加 STM32 调试端口占用检测脚本，默认检查 `60000`、`60001`、`61234`、`61235` 的 TCP/UDP 占用。
+  - 支持扫描模式、交互选择释放占用、`-SafeKill` 自动释放已知 STM32 调试进程，避免默认误关非调试服务。
+  - 修正端口参数解析与 UDP 逐端口扫描逻辑，兼容 `-Ports 6000,60000,60001,61234,61235` 形式。
+  - 增加 `netstat -aon` 兜底解析，避免无管理员权限时 `Get-NetUDPEndpoint` 漏报 UDP 端口占用。
+
+- 修改 `Core/App/Analyze/Analyze.c`
+  - 增加 `#include <stdio.h>`，为 `snprintf()` 提供标准声明，消除隐式声明和内建函数声明不匹配告警。
+
+- 修改 `Core/App/Analyze/Analyze.c`、`Core/App/Analyze/Analyze.h`
+  - 增加算法日志总控 `ANALYZE_LOG_ENABLE`，并保留启动、深度、结果、频谱摘要、三类全量频谱的独立输出开关。
+  - 将频谱逐点日志从 FFT 循环内直接投递改为分析完成后慢速发送，避免一次性打满 `PrintQueue`。
+  - 新增 `analyze_log_flush_step()`、`analyze_log_is_busy()`、`analyze_is_active()`，供任务调度层按 ADC 节拍分批刷新分析日志。
+  - `analyze_start()` 增加正在分析保护，防止外部误调用导致分析状态被清零。
+
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - 调整调度顺序为分析优先：分析已启动后，ADC 块只进入 `analyze_process_block()` 或慢速日志刷新，不再继续调用扫频和 DDS 频点切换。
+  - 增加 `MODDETECT_ANALYZE_LOG_FLUSH_LINES`，限制每个 ADC 调度周期最多发送的分析日志行数。
+  - 将有效 ADC 块统计前移到统一入口，扫频状态统计只在扫频路径更新。
+
+- 修改 `Core/App/Analyze/Analyze.c`
+  - 将 IQ 复数谱、包络谱、相位展开谱的日志帧改为 VOFA FireWater 数值格式：`spec:ch0,ch1,ch2,ch3,ch4`。
+  - 通道含义固定为：`ch0=freq_hz`、`ch1=mag`、`ch2=phase_rad`、`ch3=bin`、`ch4=spec_id`（1=IQ，2=ENV，3=PHASE）。
+  - 在本轮频谱日志发送结束后追加一行格式说明：`format:ch0=...`，用于串口日志可读映射。
+  - 保持“慢速分批刷新日志”机制不变，仅调整频谱日志编码格式与尾行说明。
+
+## 2026-05-17
+
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 修正 `app_sweep_find_center_hz()` 中首次启动扫频、请求变化重扫、未找到结果重扫的状态机分支。
+  - 扫频启动或重扫后立即返回，等待 DDS 状态确认和 settle 块结束后再测量 Vpp，避免频点投递后抢跑。
+  - 修正 `found == 0U` 分支中错误嵌套导致的括号结构问题。
+  - 二次核验时清理 `found == 0U` 分支残留的重复判断和不可达代码。
+  - `sweep_log_point()` 增加 `SWEEP_POINT_LOG_ENABLE` 编译期开关参与判断。
+  - 已运行 Debug 构建，构建通过。
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - 修正扫频完成日志和 `app_sweep_reset()` 调用位置。
+  - 现在只有 `app_sweep_find_center_hz()` 返回非 0 中心频率时，才打印 `sweep done` 并复位扫频状态，避免每个 ADC 块都重置导致扫频无法完成。
+  - 已运行 Debug 构建，构建通过。
+## 2026-05-21
+
+- 新增 `Core/App/BoardFlash/app_board_flash.h/.c`
+  - 增加板载 Flash 应用层 API，仅向上层暴露 `app_board_flash_*` 接口。
+  - 实现参数检查、地址范围检查、4K/64K 擦除对齐检查、JEDEC ID 校验和显式 scratch 区自测。
+  - 自测不会自动运行，必须由应用层显式调用 `app_board_flash_self_test()`。
+- 新增 `Core/App/BoardFlash/board_flash_w25q64.h/.c`
+  - 增加 W25Q64 指令层：复位、读 JEDEC ID、普通读、页写、4K 擦除、64K 擦除、Busy/WEL 轮询。
+  - V1 使用 QSPI 控制器的一线标准读写指令，先保证 bring-up 稳定；未启用 memory-mapped、DMA/MDMA 或文件系统。
+- 新增 `Core/App/BoardFlash/board_flash_qspi_port.h/.c`
+  - 增加 QSPI HAL 适配层，业务层不直接访问 `HAL_QSPI_*`。
+- 新增 `Core/Inc/quadspi.h`、`Core/Src/quadspi.c`
+  - 补齐 QUADSPI 初始化，按 FK743M5-XIH6 板载 W25Q64 引脚配置：PF10/PF8/PF9/PF7/PF6/PG6。
+  - 初始分频设为 `ClockPrescaler=15`，从低速起步验证。
+- 修改 `Core/Inc/stm32h7xx_hal_conf.h`
+  - 启用 `HAL_QSPI_MODULE_ENABLED`。
+- 修改 `cmake/stm32cubemx/CMakeLists.txt`
+  - 编入 `Core/Src/quadspi.c` 和 `stm32h7xx_hal_qspi.c`。
+- 修改 `CMakeLists.txt`
+  - 编入 `Core/App/BoardFlash` 三个源码文件，并加入模块 include 路径。
+- 修改 `Simple_wireless_IQ_demodulation.ioc`
+  - 记录 QUADSPI 外设、引脚、基础参数和 CubeMX 函数列表，便于后续重新生成时有配置依据。
+- 新增 `Backups/qspi_flash_20260521_before/`
+  - 从 Git `HEAD` 抽取本次修改前的 `CMakeLists.txt`、`cmake/stm32cubemx/CMakeLists.txt`、`Core/Inc/stm32h7xx_hal_conf.h`、`.ioc` 原始版本，作为配置回滚备份。
+- 新增 `方案与方案改动记录/板载QSPI_Flash隔离开发说明_20260521.md`
+  - 记录本次板载 Flash 开发边界、分层、硬件参数和当前验证状态。
+- 修改 `方案与方案改动记录/方案改动记录.md`
+  - 追加“板载 QSPI Flash 隔离开发方案”条目。
+  - 修改前已单文件备份到 `方案与方案改动记录/方案改动记录.md.bak_20260521_qspi_flash`。
+## 2026-05-22
+
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 将校准扩展扣减范围从 `APP_SWEEP_CAL_BASELINE_SPREAD_STEPS` 改为 `APP_SWEEP_CAL_BASELINE_SPREAD_HZ`，强校准点左右固定 Hz 范围内启用基线差分。
+  - 默认扩展范围为 `400000UL`，单位 Hz，不再由粗扫 step 数决定。
+- 修改 `方案与方案改动记录/扫频校准模式任务说明_20260521.md`、`方案与方案改动记录/方案改动记录.md`
+  - 记录校准基线扩展扣减范围和 step 宽度来源。
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 新增 `APP_SWEEP_CANDIDATE_DEBUG_LOG_ENABLE` 候选调试日志开关，默认开启。
+  - `sweep:cand` 后追加 `sweep:cdbg,stage,rank,start,stop,peak,second_peak,valley,valley_vpp`，用于核对候选段、两个最大值和最终谷点是否与逐点扫频日志一致。
+- 备份 `Core/App/Analyze/Analyze.c`
+  - 按用户要求，在修改分析逻辑前先保留当前分析文件源码快照。
+  - 备份文件：`Core/App/Analyze/Analyze.c.bak_20260522_000316`。
+  - 未修改原始 `Analyze.c` 内容。
+- 修改 `Core/App/Analyze/Analyze.c`、`Core/App/Analyze/Analyze.h`
+  - 分析入口 `analyze_start()`、`analyze_process_block()` 保持原签名不变。
+  - 默认关闭 IQ 复数谱和全量频谱日志，只开启包络谱与展开相位差分后的频率类特征谱。
+  - 新增调制判断宏：调制频率范围、包络深度门限、谱峰/均值评分门限和幅度/频率类优势比。
+  - 新增轻量投票判断：包络谱用于幅度类调制，频率偏移谱用于频率类调制，最终输出 `AM/FM/MIXED/CW` 结果日志。
+  - Debug 构建通过，无新增编译警告。
+- 修改 `Core/App/Analyze/Analyze.c`
+  - 新增 `ANALYZE_LOW_IF_EST_ENABLE` 低中频偏置估计开关，保持分析入口不变。
+  - 从展开相位一阶差分的均值估计本块残余低中频偏置，并在多块分析完成后输出平均 `low_if`。
+  - 频率类特征继续使用 `瞬时频率变化量 - 平均低中频偏置`，避免 5kHz 一类固定基带偏移参与调制判决。
+  - 结果日志变为 `analyze: result center=... low_if=... mode=...`，便于现场确认混频后是否落在低中频。
+  - Debug 构建通过，无新增编译警告。
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 候选选点规则改为三类：平台型取候选段中点，凸峰型取段内最大值，凹谷型取双肩之间最低点。
+  - 新增 `APP_SWEEP_CANDIDATE_CONCAVE_DIP_RAW`，只有双峰分开、谷点在两峰之间且谷深足够时才按凹谷型处理。
+  - 修正单峰凸起被“两峰之间谷点”逻辑误选到相邻次高点的问题，例如 `peak=180`、`second_peak=179` 会归为凸峰并选 `peak_step=180`。
+  - `sweep:cdbg` 追加 shape 字段：`0=平台`、`1=凸峰`、`2=凹谷`，便于现场核对候选分型。
+  - Debug 构建通过，无新增编译警告。
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 修正凹谷检测的肩峰查找顺序：先找候选段内最低谷点，再分别在谷点左侧和右侧找肩峰。
+  - 避免两个最高点都落在同一侧肩峰时漏判凹谷；例如 `126.750~127.250MHz` 段内 `127.000MHz` 为低谷、右肩 `127.050/127.100MHz` 连续较高时，应选低谷而不是右肩峰值。
+  - 预期日志中该类候选会显示 `shape=2`，`valley_step` 对应最终候选频率。
+  - Debug 构建通过，无新增编译警告。
+# 2026-05-22 扫频宏定义注释说明优化
+
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 将候选门限、校准扣减门限、细扫开关、ADC 打满检测等宏定义注释改为更通俗的中文说明。
+  - 明确 `APP_SWEEP_CAL_BASELINE_MIN_VPP` 只决定校准基线是否参与任务扫频扣减，不是任务候选剔除门限。
+
+# 2026-05-22 UI 未锁定状态同步
+
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 新增检测页 `未锁定` 状态，当 `ModDetectTask` 上报 `result_ready=1` 且 `center_hz=0` 时显示红色状态标签，并把频率显示保持为 `--.--- MHz`。
+  - 调整状态优先级，未锁定结果优先于 `analyze_is_done()`，避免上一轮分析完成状态覆盖本轮 `moddetect: sweep unlocked center=0Hz`。
+
+# 2026-05-22 扫频凹谷候选识别修正
+
+- 修改 `Core/App/Sweep/app_sweep.c`
+  - 新增 `APP_SWEEP_CANDIDATE_MIN_PEAK_GAP_STEPS`，把双肩峰最小间隔做成宏定义，便于现场调参。
+  - `sweep_candidate_two_peak_valley()` 改为先找候选段主肩峰，再在两侧找可分离次肩峰，最后只在两个肩峰之间找谷点。
+  - 修正 `119.750~120.250MHz` 这类双峰中间凹口被候选段边缘低点抢走的问题，预期 `120.000MHz` 中间谷点会进入 `shape=2` 凹谷候选。
+  - Debug 构建通过。
+
+# 2026-05-23 PSK 失败日志触发的数字调制判别修正
+
+- 备份 `Core/App/Analyze/Analyze.c`、`Core/App/Analyze/Analyze.h`
+  - 备份到 `备份/Analyze_before_digital_ratio_occ99_20260523_033000.c`。
+  - 备份到 `备份/Analyze_h_before_digital_ratio_occ99_20260523_033000.h`。
+- 修改 `Core/App/Analyze/Analyze.c`
+  - 新增 IQ 谱 `99%` 累计能量占用带宽估计，用于区分 FSK 的紧凑谱和 PSK 的宽谱。
+  - 新增 `env_iq_ratio` 特征，按“包络主峰 / IQ 主峰”判断 ASK 是否为强包络信号。
+  - 数字调制分支按 `ASK 强包络 -> FSK 紧凑 IQ + 10k 频率特征 -> PSK 宽带 IQ` 顺序判别。
+  - 旧 `fsk_strong` 双峰规则增加 IQ `99%` 带宽和包络/IQ 比值保护，避免 PSK 的强双峰被误吃进 FSK。
+  - 结果日志前段追加 `iq99` 和 `env_iq`，便于现场核对 PSK/ASK/FSK 分支命中依据。
+  - 针对 `D:\串口调试助手-V3.1\logs\psk失败（1）.txt`，失败原因判断为修正后 PSK 的 IQ 谱已明显宽带，但旧 `iq_wide` 只用主峰比例宽度，导致落入 `MIXED` 兜底。
+  - Debug 构建通过。
+
+# 2026-05-23 分析完成后禁止自动进入解调
+
+- 备份 `Core/App/Tasks/ModDetectTask.c`、`Core/App/Tasks/DemodTask.c`
+  - 备份到 `备份/ModDetectTask_before_disable_auto_demod_20260523_033900.c`。
+  - 备份到 `备份/DemodTask_before_disable_auto_demod_20260523_033900.c`。
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - 新增 `MODDETECT_AUTO_DEMOD_ENABLE` 宏，默认 `0`，分析完成后停在识别结果，不自动调用 `demod_task_start_with_result()`。
+  - 保留后续直通解调入口，若需要恢复“分析后自动解调”，只需把该宏改为 `1`。
+  - 模式请求忙碌判断不再因为 `analyze_log_is_busy()` 拒绝新任务，分析完成后即允许用户再次点击任务重新扫频分析。
+  - 新一轮任务开始时仍调用 `demod_task_stop()`，确保旧解调状态不会残留。
+  - Debug 构建通过。
+# 2026-05-23 解调输出接入 DAC1_OUT2(PA5)
+- 备份 `Core/Src/dac.c`、`Core/Inc/dac.h`、`Core/Src/dma.c`、`Core/Src/stm32h7xx_it.c`、`Core/App/Tasks/DemodTask.c`
+  - 备份到 `备份/dac_before_demod_out2_20260523_050857.c`。
+  - 备份到 `备份/dac_h_before_demod_out2_20260523_050857.h`。
+  - 备份到 `备份/dma_before_demod_out2_20260523_050857.c`。
+  - 备份到 `备份/stm32h7xx_it_before_demod_out2_20260523_050857.c`。
+  - 备份到 `备份/DemodTask_before_demod_out2_20260523_050857.c`。
+- 核对 `DAC1_OUT1/PA4`
+  - 当前仍由 `ModDetectTask.c` 在任务入口调用 `HAL_DAC_Start(&hdac1, DAC_CHANNEL_1)` 和 `HAL_DAC_SetValue(... DAC_CHANNEL_1 ...)` 输出约 1400mV。
+  - 本次没有改动 `DAC_CHANNEL_1` 的恒温晶振控制路径。
+- 修改 `Core/Src/dac.c`、`Core/Inc/dac.h`
+  - 新增 `hdma_dac1_ch2`，为 `DAC1_OUT2/PA5` 配置 `DMA1_Stream1 + DMA_REQUEST_DAC1_CH2`。
+  - 明确 `DAC1_OUT2/PA5` 用于解调输出，`DAC1_OUT1/PA4` 继续保留给恒温晶振控制。
+- 修改 `Core/Src/stm32h7xx_it.c`
+  - 增加 `DMA1_Stream1_IRQHandler()`，转入 `HAL_DMA_IRQHandler(&hdma_dac1_ch2)`。
+- 修改 `Core/App/Tasks/DemodTask.c`
+  - 新增 `DEMOD_DAC_OUT2_ENABLE`，进入解调后启动 `HAL_DAC_Start_DMA(... DAC_CHANNEL_2 ...)`。
+  - `DMA1_Stream1_IRQn` 在解调输出启动前由 `DemodTask` 配置，避免改动 `MX_DMA_Init()` 生成区。
+  - 解调输出缓冲写入后执行 DCache clean，确保 DMA 读取到最新解调数据。
+  - 停止解调时停止 `DAC_CHANNEL_2` DMA，并把 PA5 输出回到中点码 `2048`。
+- Debug 构建通过。
+
+# 2026-05-23 解调模块最小化接入准备
+- 备份 `Core/App/DEMODE/rx_demod.c`、`Core/App/DEMODE/rx_demod.h`、`Core/App/Tasks/DemodTask.c`
+  - 备份到 `备份/rx_demod_before_minimal_prepare_20260523_044343.c`。
+  - 备份到 `备份/rx_demod_h_before_minimal_prepare_20260523_044343.h`。
+  - 备份到 `备份/DemodTask_before_minimal_prepare_20260523_044343.c`。
+- 修改 `Core/App/DEMODE/rx_demod.h`
+  - 新增 `RX_DEMOD_MAX_BLOCK_SAMPLES`，当前固定为 4096 点，与 ADC 单块长度一致。
+  - 新增 `RxDemod_Reset()`，用于后续任务启动、停止或切换模式时清理解调内部滤波状态。
+- 修改 `Core/App/DEMODE/rx_demod.c`
+  - 新增解调块长度保护，所有 AM/FM/FSK/PSK 入口最多处理 `RX_DEMOD_MAX_BLOCK_SAMPLES` 点。
+  - 将原初始化中的状态清零逻辑整理到 `RxDemod_Reset()`，并在模式切换时自动复位。
+  - `RX_FM_CMSIS_BLOCK_MAX` 改为跟随 `RX_DEMOD_MAX_BLOCK_SAMPLES`，避免多处维护块长度。
+- 修改 `Core/App/Tasks/DemodTask.c`
+  - 解调输出缓冲区改为静态 DMA 区 4096 点，避免 4096 点 ADC 块写入原 2048 点栈缓冲导致越界。
+  - `ASK` 暂按包络类复用 AM 解调入口，方便后续启用解调时有明确路径。
+  - 启动和停止解调时调用 `RxDemod_Reset()`，避免重复分析/后续手动解调时残留旧状态。
+  - 当前仍不接入主线：`MODDETECT_AUTO_DEMOD_ENABLE` 保持为 `0U`，分析完成后不会自动进入解调。
+- Debug 构建通过。
+
+# 2026-05-23 FM 误判 PSK 保护修正
+- 依据 `C:\Users\18152\Documents\Codex\2026-05-22\d-iq-matlab-rf-5k-iq\FM误判PSK_修改意见与原因_20260523.md` 修改。
+- 备份 `Core/App/Analyze/Analyze.c`、`Core/App/Tasks/PrintfTask.c`
+  - 备份到 `备份/Analyze_before_fm_guard_psk_20260523_053600.c`。
+  - 备份到 `备份/PrintfTask_before_fm_guard_psk_20260523_053600.c`。
+- 修改 `Core/App/Analyze/Analyze.c`
+  - 将原超长 `analyze: result ...` 结果日志拆为 `analyze:r0/r1/r2` 三行，避免 `print_msg_t.data[126]` 截断关键字段。
+  - 新增 `analyze_fm_like_before_psk()`，在 PSK 宽带弱包络规则前，用“频率类主峰 + 弱包络 + IQ 99% 宽带 + low_if ± n*fmod 梳状边带”保护 FM。
+  - `psk_board` 和后续 PSK 兜底分支增加 `fm_like == 0U` 反条件，避免大频偏 FM 被 PSK 抢判。
+  - `ANALYZE_FM_RESCUE_COMB_TOL_HZ` 从 `1500U` 放宽到 `2000U`，`ANALYZE_FM_RESCUE_COMB_MIN_COUNT` 从 `5U` 放宽到 `4U`，属于报告建议的适度放宽，不写死 10kHz 或 111MHz。
+- 修改 `Core/App/Tasks/PrintfTask.c`
+  - 更新 `PRINTF_FW_ID_BUILD` 为 `20260523_05:36`。
+  - 更新 `PRINTF_FW_ID_FEATURE_PSK` 为 `fm_guard_psk`，便于现场确认烧录的是本版固件。
+- Debug 构建通过。
+
+# 2026-05-23 FSK 解调输出改为门限高低电平
+- 备份 `Core/App/DEMODE/rx_demod.c`
+  - 备份到 `备份/rx_demod_before_fsk_threshold_dac_20260523_054900.c`。
+- 修改 `Core/App/DEMODE/rx_demod.c`
+  - 将 FSK DAC 输出从 `RX_DAC_CENTER + g_fm_smooth >> RX_FSK_DAC_GAIN_SHIFT` 的频偏模拟量，改为门限判决后的高低电平。
+  - 新增 `RX_FSK_DAC_THRESHOLD`、`RX_FSK_DAC_LOW`、`RX_FSK_DAC_HIGH`，默认门限为 `0`，低电平 `1000U`，高电平 `3100U`。
+  - PA5/DAC1_OUT2 上观察到的是 FSK 判决结果的 0/1，更适合现场看波形幅度和码型。
+- Debug 构建通过。
+
+# 2026-05-23 UI 状态同步与按钮调整
+- 核对 `Core/App/DEMODE/rx_demod.c`
+  - 当前 FSK 已实际落地为门限输出：`g_fm_smooth >= RX_FSK_DAC_THRESHOLD` 输出 `RX_FSK_DAC_HIGH`，否则输出 `RX_FSK_DAC_LOW`。
+- 备份 `Core/App/LVGL/app_lvgl_ui.c`、`Core/App/Tasks/ModDetectTask.c`
+  - 备份到 `备份/app_lvgl_ui_before_status_sync_20260523_060800.c`。
+  - 备份到 `备份/ModDetectTask_before_status_sync_20260523_060800.c`。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 主状态标签改为按任务进度显示：`扫描中`、`分析中`、`解调输出`，并继续使用圆角底色标签。
+  - 引入 `DemodTask` 状态，解调运行时优先显示 `解调输出`。
+  - 右上角新增英文短状态标签：`INIT/READY/SCAN/ANALYZE/DEMOD/DONE/UNLOCK/CAL`，通过底色同步当前设备状态。
+  - `校准` 和任务按钮放大，任务按钮文本改为 `开始/重新开始`。
+  - 修正旧 `analyze_is_done()` 抢占新任务显示的问题：只有本轮 `result_ready` 且中心有效时才显示 `分析完成`。
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - UI 请求新任务或校准时立即清空对外旧结果状态，使屏幕能在按钮点击后快速切到新一轮任务状态。
+- 本次没有新增字库；继续使用已开启的 `LV_FONT_SOURCE_HAN_SANS_SC_14_CJK`，避免扩大 Flash 占用。
+- Debug 构建通过。
+# 2026-05-23 UI 右上角硬件自检状态
+- 备份 `Core/App/LVGL/app_lvgl_ui.c`
+  - 备份到 `备份/app_lvgl_ui_before_hw_status_20260523_061900.c`。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 右上角状态从任务进度改为硬件自检状态，分别显示 `SI5351 OK/WAIT` 和 `AD9959 OK/WAIT/ERR`。
+  - `SI5351` 状态来自 `app_si5351_is_clock_ready()`。
+  - `AD9959` 状态来自 `AppDDS_GetStatus()` 的 `hw_ready` 和 `last_err`。
+  - 主任务状态标签改为英文：`IDLE/CAL/CAL DONE/SCANNING/ANALYZING/DONE/UNLOCK/DEMOD OUT`。
+  - Debug 构建通过。
+# 2026-05-23 校准/任务开始前 DDS 重新初始化
+- 备份 `Core/App/Tasks/ModDetectTask.c`、`Core/App/LVGL/app_lvgl_ui.c`
+  - 备份到 `备份/ModDetectTask_before_dds_reinit_on_start_20260523_062700.c`。
+  - 备份到 `备份/app_lvgl_ui_before_english_buttons_20260523_062700.c`。
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - 新增 `MODDETECT_DDS_REINIT_ON_START_ENABLE`，默认开启。
+  - 每次进入校准或任务流程前投递 `APP_DDS_CMD_INIT` 到 DDS 队列，由 DDSTask 串行重新初始化 AD9959。
+  - 不直接在 ModDetectTask 内调用 `AppDDS_Init()`，避免跨任务抢占 DDS 硬件控制权。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 屏幕按钮文本改为英文：`Calibrate`、`Start/Restart`。
+- Debug 构建通过。
+# 2026-05-23 AD9959 状态显示语义修正
+- 备份 `Core/App/LVGL/app_lvgl_ui.c`
+  - 备份到 `备份/app_lvgl_ui_before_ad9959_cfg_label_20260523_063600.c`。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 将右上角 `AD9959 OK` 改为 `AD9959 CFG`。
+  - 原因：当前 AD9959 是单向软件 SPI 写入，没有读回校验或电源检测脚，`hw_ready=1` 只能表示初始化配置已发送，不能证明芯片有电并真实响应。
+  - `AD9959 WAIT/ERR` 逻辑保留。
+- Debug 构建通过。
+# 2026-05-23 UI 校准历史状态移到右上角
+- 备份 `Core/App/LVGL/app_lvgl_ui.c`
+  - 备份到 `备份/app_lvgl_ui_before_cal_status_tag_20260523_064300.c`。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 右上角新增 `CAL --/RUN/OK/FAIL` 状态标签，用颜色显示校准历史状态。
+  - `CAL RUN` 仅在校准进行中显示；校准结束后按 `cal_valid/cal_done` 显示 `CAL OK` 或 `CAL FAIL`。
+  - 底部质量行删除 `Cal:` 与 `Clip:`，仅保留 `Blocks/Drops/Seq`。
+- Debug 构建通过。
+# 2026-05-23 UI 满屏仪表盘布局
+- 备份 `Core/App/LVGL/app_lvgl_ui.c`
+  - 备份到 `备份/app_lvgl_ui_before_full_dashboard_20260523_110800.c`。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 检测页主卡片扩展为接近全屏的 `776x358` 仪表盘，减少右侧和底部空白。
+  - 左侧集中显示中心频率、调制类型、调制参数和大号任务状态色块。
+  - 右侧新增 `Actions` 区域，放置 `CALIBRATE` 与 `START TASK` 两个大按钮。
+  - 右侧新增 `Readiness` 总状态色块，汇总显示 `READY/NEED CAL/HW WAIT/DDS WAIT/DDS ERR/RUNNING/CAL RUN/DEMOD OUT`。
+  - `Blocks/Drops/Seq` 移到屏幕底部，作为调试状态栏显示。
+  - 未新增字体，继续使用当前已启用的 14 号字体，避免增加 Flash 占用。
+- Debug 构建通过。
+# 2026-05-23 SI5351 运行期监测防抖
+- 备份 `Core/App/Tasks/SI5351.c`
+  - 备份到 `备份/SI5351_before_monitor_debounce_20260523_112000.c`。
+- 修改 `Core/App/Tasks/SI5351.c`
+  - 新增 `APP_SI5351_MONITOR_FAIL_LIMIT`，默认 `5`。
+  - SI5351 ready 后的状态轮询不再因为单次 `CLKIN_LOST/PLL_UNLOCK/I2C_READ` 立刻关输出。
+  - 只有连续 5 次监测失败才调用 `app_si5351_enable_outputs(false)` 并回到重试流程，降低 I2C 瞬态读失败或 PLL 状态短暂抖动导致 UI 显示 WAIT 的概率。
+- Debug 构建通过。
+# 2026-05-23 校准保存完成反馈
+- 修改 `Core/App/Tasks/ModDetectTask.h`、`Core/App/Tasks/ModDetectTask.c`
+  - 新增 `MODDETECT_CAL_SAVE_OK` 状态，Flash 保存成功后保持该状态，供 UI 给出明确完成提醒。
+  - 保存失败时仍回到当前 RAM 校准状态，避免误显示已成功落盘。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - `CAL SAVE` 保留为正在写 Flash 的中间状态。
+  - 保存成功后显示 `CAL SAVE OK`，并让右上角 CAL 状态标签边框闪烁 3 秒。
+  - `CAL SAVE OK` 提示超时后在 UI 上回落显示 `CAL RAM`，表示当前上电校准数据可用。
+
+# 2026-05-23 ADC 参考时钟自检与校准 Flash 持久化
+- 修改 `Core/App/Tasks/ModDetectTask.h`、`Core/App/Tasks/ModDetectTask.c`
+  - 新增 `MODDETECT_ADC_REF_CLOCK_TIMEOUT_MS`，通过 ADC 数据块心跳判断 ADC 参考时钟/采样链路是否持续工作。
+  - `moddetect_task_stats_t` 新增 `adc_ref_ok`、`adc_last_tick` 和 `cal_state`，供 UI 同步右上角状态。
+  - 上电后尝试从板载 Flash 恢复历史校准数据；校准完成后自动写入 Flash。
+- 修改 `Core/App/Sweep/app_sweep.h`、`Core/App/Sweep/app_sweep.c`
+  - 新增 `app_sweep_load_calibration_from_flash()` 与 `app_sweep_save_calibration_to_flash()`。
+  - 校准记录固定写入板载 Flash 最后一个 4K 扇区，包含 magic、版本、扫频网格、基线表、clip 表和校验值。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 右上角新增 `ADC OK/WAIT` 状态。
+  - 校准状态细分为 `CAL OLD`、`CAL RUN`、`CAL SAVE`、`CAL RAM`。
+- 修改 `Core/App/Tasks/SI5351.c`
+  - ready 后的 I2C 读失败只作为监控告警，不再直接关闭已配置输出；真实采样时钟异常由 ADC 心跳状态辅助暴露。
+
+# 2026-05-23 校准 Flash 重复写入与 SI5351 防抖宏修正
+- 备份 `Core/App/Tasks/ModDetectTask.c`
+  - 备份到 `备份/ModDetectTask_before_cal_flash_repeat_fix_20260523.c`。
+- 备份 `Core/App/Tasks/SI5351.c`
+  - 备份到 `备份/SI5351_before_monitor_macro_fix_20260523.c`。
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - 校准分支入口增加 `cal_done` 保护：校准已完成后不再重复调用 `app_sweep_calibrate_baseline()`，避免每个 ADC 块反复触发 Flash 保存。
+  - 保留校准完成后的 UI 状态，不强制切回任务模式，后续点击 `START TASK` 仍可正常开始任务。
+- 修改 `Core/App/Tasks/SI5351.c`
+  - 去掉重复的 `APP_SI5351_MONITOR_FAIL_LIMIT` 覆盖定义，只保留一个 `5U` 防抖门限。
+  - 更新 ready 后监测注释，使说明与“连续异常达到门限后才处理”的实际逻辑一致。
+
+# 2026-05-24 恒温晶振电压校准模式
+- 备份 `Core/App/Tasks/ModDetectTask.c`、`Core/App/Tasks/ModDetectTask.h`、`Core/App/LVGL/app_lvgl_ui.c`、`CMakeLists.txt`
+  - 备份到 `备份/ModDetectTask_before_ocxo_cal_20260524.c`。
+  - 备份到 `备份/ModDetectTask_before_ocxo_cal_20260524.h`。
+  - 备份到 `备份/app_lvgl_ui_before_ocxo_cal_20260524.c`。
+  - 备份到 `备份/CMakeLists_before_ocxo_cal_20260524.txt`。
+- 新增 `Core/App/OCXO/app_ocxo_cal.h`、`Core/App/OCXO/app_ocxo_cal.c`
+  - 管理 PA4/DAC1_OUT1 恒温晶振控制电压，默认 `1400mV`，限幅 `800~2200mV`。
+  - 提供 `1mV/10mV/100mV` 三档手动步进。
+  - OCXO 校准记录写入外部 Flash 倒数第二个 4K 扇区，避免覆盖频段基线校准。
+- 修改 `Core/App/Tasks/ModDetectTask.h`、`Core/App/Tasks/ModDetectTask.c`
+  - 新增 `MODDETECT_RUN_OCXO_CAL`。
+  - 上电加载 OCXO 历史电压并持续输出到 PA4；无历史数据时使用默认值。
+  - 进入 OCXO 校准模式时停止解调，重新初始化 DDS，并配置 AD9959 CH0 输出 `125MHz`。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 右上角新增 `OCXO --/OLD/RUN/SAVE/OK/ERR` 状态标签。
+  - 检测页新增 `OCXO CAL`、`STEP`、`-`、`+`、`SAVE` 和当前电压显示。
+- 修改 `CMakeLists.txt`
+  - 增加 OCXO 模块源码和头文件路径。
+
+# 2026-05-24 Analyze 参数识别字段扩展
+- 参考 `D:/用户开发习惯与开发经验/ai知识库/Simple_wireless_IQ_Analyze参数识别更新指导书_2026-05-24.md` 执行。
+- 备份 `Core/App/Analyze/Analyze.c`、`Core/App/Analyze/Analyze.h`、`Core/App/LVGL/app_lvgl_ui.c`、`Core/App/Tasks/DemodTask.c`
+  - 备份到 `备份/Analyze_before_param_update_20260524.c`。
+  - 备份到 `备份/Analyze_before_param_update_20260524.h`。
+  - 备份到 `备份/app_lvgl_ui_before_param_update_20260524.c`。
+  - 备份到 `备份/DemodTask_before_param_update_20260524.c`。
+- 修改 `Core/App/Analyze/Analyze.h`
+  - `analyze_result_t` 新增 AM 深度、ASK 深度、FM 频偏、FSK 频差、符号率、参数有效位和参数置信度字段。
+  - 新增 `ANALYZE_PARAM_*_VALID` 有效位宏，旧 `mod_hz/depth_pm` 保持兼容。
+- 修改 `Core/App/Analyze/Analyze.c`
+  - 使用轻量分位数估计提取 AM/ASK 深度和 FM 频偏。
+  - FSK 结果中明确输出 `fsk_separation_hz`，FSK/PSK 可用时输出 `symbol_rate_hz`。
+  - 新增 `analyze:r3` 串口日志，输出参数字段与有效位。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - UI 不显示中间量，只按最终调制类型显示对应参数。
+  - 修正深度显示比例：`depth_pm=500` 显示为 `50.0%`。
+- 修改 `Core/App/Tasks/DemodTask.c`
+  - 解调启动日志补充 `sym` 和 `fsk_sep`。
+  - FSK/PSK 解调统计优先使用有效 `symbol_rate_hz`，避免继续把 FSK 频差误当符号率。
+- Debug 构建通过。
+
+# 2026-05-24 数字解调算法推进
+- 备份 `Core/App/DEMODE/rx_demod.c`、`Core/App/DEMODE/rx_demod.h`、`Core/App/Tasks/DemodTask.c`
+  - 备份到 `备份/rx_demod_before_digital_demod_update_20260524.c`。
+  - 备份到 `备份/rx_demod_before_digital_demod_update_20260524.h`。
+  - 备份到 `备份/DemodTask_before_digital_demod_update_20260524.c`。
+- 修改 `Core/App/DEMODE/rx_demod.h`
+  - 新增 `RxDemod_ConfigureSignal(symbol_rate_hz, low_if_hz, fsk_separation_hz)`，让解调器接收 Analyze 输出的符号率、低中频和 FSK 频差。
+- 修改 `Core/App/Tasks/DemodTask.c`
+  - 在解调任务配置模式时调用 `RxDemod_ConfigureSignal()`。
+  - FSK/PSK 的解调统计 `mod_hz` 使用实际解调用符号率；无码头数字输出允许整体反向，不在任务层强制极性。
+- 修改 `Core/App/DEMODE/rx_demod.c`
+  - FSK 不再复用 FM 的 `g_fm_dc/g_fm_smooth` 状态，也不再逐点用固定 0 门限判决。
+  - 新增 FSK 专用相位差分鉴频、跨 block 码元积分、运行时双簇门限估计；只要求输出跟随两个频率簇，不硬编码“高频=1/低频=0”，避免无码头场景下过拟合固定极性。
+  - PSK 使用 Analyze 传入的 `low_if_hz` 配置 NCO，支持 `-5 kHz` 这类低中频下变频；符号积分长度使用运行时 `symbol_rate_hz`。
+  - IIR 类状态更新改用对称右移辅助函数，减少负数算术右移带来的偏置风险。
+- Debug 构建通过，链接成功；本次未烧录。
+
+# 2026-05-24 上电自检通过后自动进入任务
+- 备份 `Core/App/Tasks/ModDetectTask.c`、`文件改动记录.md`
+  - 备份到 `备份/ModDetectTask_before_auto_task_after_selftest_20260524.c`。
+  - 备份到 `备份/文件改动记录_before_auto_task_after_selftest_20260524.md`。
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - 新增 `MODDETECT_AUTO_TASK_AFTER_SELF_TEST_ENABLE`，控制上电自检通过后是否自动进入任务。
+  - 新增 `MODDETECT_SELF_TEST_STABLE_BLOCKS`，要求自检状态连续稳定若干个 ADC 数据块后才触发自动任务。
+  - 自检条件为 `SI5351 ready`、`AD9959 hw_ready 且 last_err=0`、`ADC 数据心跳有效`。
+  - 自检通过后自动请求 `MODDETECT_RUN_TASK`，串口输出 `moddetect: selftest ok, auto task`。
+  - 保留 UI 按钮手动校准、OCXO 校准和重新开始任务能力。
+- Debug 构建通过。
+
+# 2026-05-24 UI 可配置上电自动任务与 OCXO 控件隐藏
+- 备份 `Core/App/OCXO/app_ocxo_cal.c`、`Core/App/OCXO/app_ocxo_cal.h`、`Core/App/Tasks/ModDetectTask.c`、`Core/App/LVGL/app_lvgl_ui.c`、`文件改动记录.md`
+  - 备份到 `备份/app_ocxo_cal_before_auto_task_setting_20260524.c`。
+  - 备份到 `备份/app_ocxo_cal_before_auto_task_setting_20260524.h`。
+  - 备份到 `备份/ModDetectTask_before_auto_task_setting_20260524.c`。
+  - 备份到 `备份/app_lvgl_ui_before_auto_task_setting_20260524.c`。
+  - 备份到 `备份/文件改动记录_before_auto_task_setting_20260524.md`。
+- 修改 `Core/App/OCXO/app_ocxo_cal.h`、`Core/App/OCXO/app_ocxo_cal.c`
+  - OCXO Flash 记录升级到 V2，新增 `auto_task_enable` 字段。
+  - 兼容旧 V1 记录：旧记录继续加载 OCXO 电压，自动任务开关使用默认开启。
+  - 新增 `app_ocxo_cal_get_auto_task_enable()` 和 `app_ocxo_cal_set_auto_task_enable()`，UI 修改后立即写入外部 Flash。
+  - 保存自动任务开关时保留当前 OCXO 电压，不额外占用 Flash 扇区。
+- 修改 `Core/App/Tasks/ModDetectTask.c`
+  - 自检通过自动进入任务前增加运行期开关判断；UI 关闭后，上电自检只显示 ready，不自动扫频。
+- 修改 `Core/App/LVGL/app_lvgl_ui.c`
+  - 新增 `AUTO ON/AUTO OFF` 按钮，点击后立即保存到 Flash。
+  - OCXO 电压值、`STEP`、`-`、`+`、`SAVE` 仅在 `OCXO CAL` 模式显示；非校准模式隐藏，避免误触 PA4 电压。
+- Debug 构建通过。

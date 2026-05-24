@@ -1,0 +1,166 @@
+# 串口日志输出统计 2026-05-12 22:42:50
+
+## 统计对象
+
+- 导出日志：`D:\串口调试助手-V3\logs\serial_export_20260512_224250.txt`
+- 工程目录：`D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation`
+- 统计时间：2026-05-12
+
+## 关键结论
+
+- `iq_amp` 与 `iq_pre` 当前存在部分重复：
+  - `iq_pre.mi` 等于 `iq_amp.i_mean`
+  - `iq_pre.mq` 等于 `iq_amp.q_mean`
+  - `iq_pre.mag` 等于 `iq_amp.mag`
+- 两者不完全等价：
+  - `iq_pre.ph_urad` 是 IQ 预处理内部的相位累加/跟踪相位，不是以 `+I` 为 x 正半轴的绝对相位。
+  - `iq_amp.ph_urad` / `iq_amp.ph_mdeg` 是按 `atan2(Q, I)` 计算的绝对相位，其中去中心后的 `I` 为 x 轴，`+I` 为 x 正半轴，去中心后的 `Q` 为 y 轴。
+- 因此调试“矢量是否落在 x 正半轴”时，应优先看 `iq_amp.ph_mdeg`、`iq_amp.i_mean`、`iq_amp.q_mean`：
+  - `ph_mdeg` 接近 `0` 表示靠近 `+I` 轴。
+  - `i_mean > 0` 表示落在 x 正半轴。
+  - `q_mean` 接近 `0` 表示垂直分量小。
+
+## 幅度与相位单位说明
+
+- `iq_pre.mi`、`iq_pre.mq`、`iq_amp.i_mean`、`iq_amp.q_mean`：
+  - 单位是 ADC 原始码值差值，已经减去 ADC 中点，不是 mV。
+  - 当前 ADC 为 14 bit，原始码值范围约 `0~16383`，默认中点约 `8192`。
+  - 例如 `i_mean=541` 表示 I 路重心比 ADC 中点高约 541 个 ADC code。
+- `iq_amp.i_amp`、`iq_amp.q_amp`：
+  - 单位也是 ADC code。
+  - 计算方式是 `abs(i_mean)`、`abs(q_mean)`，表示 I/Q 两个轴向分量的绝对幅度。
+- `iq_pre.mag`、`iq_amp.mag`：
+  - 单位是 ADC code。
+  - 计算方式近似为 `sqrt(i_mean^2 + q_mean^2)`，表示去中心后 I/Q 重心矢量的合成幅度。
+- `iq_rot.rh/rt/ch/ct`：
+  - 单位是 ADC code 的累积矢量幅度，来自边缘窗口内多点求和后的幅度，不等同于单点电压或单点幅度。
+- `adc_range.ivpp/qvpp`、`vpp`、`sig.v/p/n`、`sigdet_edge.p/v/t`：
+  - 单位是 ADC 原始码值的峰峰值或由峰峰值计算出的阈值，仍然不是 mV。
+- `iq_pre.fo_mhz`：
+  - 字段名沿用历史命名，实际含义是 `residual_freq_millihz`，单位是 mHz。
+- `iq_amp.ph_urad`：
+  - 单位是微弧度，`1000000 urad = 1 rad`。
+- `iq_amp.ph_mdeg`：
+  - 单位是毫度，`1000 mdeg = 1 degree`。
+  - 调试绝对相位时，`0 mdeg` 表示落在 `+I` 轴，`90000 mdeg` 表示约 `+90°`，`-90000 mdeg` 表示约 `-90°`。
+- `iq_amp.ph_deg`：
+  - 单位是度，固件直接输出三位小数，例如 `ph_deg=80.236`。
+  - 该字段由 `ph_mdeg` 整数拆分得到，不依赖浮点 `printf`，便于串口人眼直接观察。
+
+## 本次导出日志实际出现类型
+
+| 日志前缀 | 出现次数 | 说明 |
+| --- | ---: | --- |
+| `fw_id,` | 2 | 固件版本标识，启动后重复输出。 |
+| `dds: wait si5351 refclk` | 1 | DDS 任务等待 SI5351 参考时钟。 |
+| `si5351: ready` | 1 | SI5351 初始化完成，输出地址、型号、端口和时钟方案。 |
+| `dds: si5351 refclk ready` | 1 | DDS 任务确认参考时钟已经就绪。 |
+| `sig,` | 10 | 扫频/锁定状态 1 秒日志，其中 Vpp 相关字段单位为 ADC code。 |
+| `sigdet_final,` | 1 | 扫频锁定最终结果。 |
+| `sigdet_edge,` | 1 | 扫频边界、峰谷和校正信息。 |
+| `iq_pre,` | 10 | IQ 预处理频偏观测日志，I/Q 和 mag 单位为 ADC code。 |
+| `iq_rot,` | 8 | IQ 预处理边缘相位差验证日志，幅度字段为边缘窗口累积矢量幅度，单位为 ADC code。 |
+| `iq_amp,` | 10 | 锁定后 I/Q 幅度和以 `+I` 为 x 正半轴的绝对相位日志，幅度单位为 ADC code。 |
+
+## 当前源码可输出的日志格式
+
+| 日志格式 | 当前状态 | 来源文件 | 输出条件 | 主要字段 |
+| --- | --- | --- | --- | --- |
+| `fw_id,%s,build=%s,ask=%s,psk=%s` | 启用 | `Core/App/Tasks/PrintfTask.c` | `UART_MODE_LOG`，启动后按 `PRINTF_FW_ID_REPEAT_COUNT` 输出。 | 固件产品名、构建号、ASK/PSK 特性标识。 |
+| `dds: wait si5351 refclk` | 启用 | `Core/App/Tasks/DDSTask.c` | DDS 任务启动时 SI5351 未就绪。 | DDS 等待参考时钟。 |
+| `dds: si5351 refclk ready` | 启用 | `Core/App/Tasks/DDSTask.c` | 曾等待过 SI5351，之后检测到时钟就绪。 | DDS 参考时钟就绪。 |
+| `dds: init done hw=...` | 当前关闭 | `Core/App/Tasks/DDSTask.c` | `DDS_UART_STATUS_ENABLE != 0U`。 | DDS 初始化状态。 |
+| `dds: cmd=...` | 当前关闭 | `Core/App/Tasks/DDSTask.c` | `DDS_UART_STATUS_ENABLE != 0U` 且收到 DDS 命令。 | DDS 命令、参数、硬件状态和错误码。 |
+| `si5351: ready addr=... variant=... port=... plan=...` | 启用 | `Core/App/Tasks/SI5351.c` | SI5351 初始化成功且 `UART_MODE_LOG`。 | SI5351 地址、型号、端口和时钟方案。 |
+| `si5351: fault=... hal=... variant=... port=...` | 异常时输出 | `Core/App/Tasks/SI5351.c` | SI5351 初始化或配置失败。 | 故障类型、HAL 状态、型号和端口。 |
+| `sig,s=...,sc=...,lk=...,cp=...,lo=...,est=...,k=...,...` | 启用 | `Core/App/LOG/app_adc_log.c` | `ADC_ALGO_LOG_ENABLE=1`，每秒一次。 | 扫频阶段、是否扫描、是否锁定、载波存在、LO、估计频率、频点索引、Vpp 峰谷；Vpp 单位为 ADC code。 |
+| `sigdet_final,final_lo=...,est=...,raw=...,corr=...,lk=...,ms=...` | 启用 | `Core/App/Signal/Sweep/app_signal_sweep.c` | 扫频结束并进入锁定/失败结果输出。 | 最终 LO、估计载波、原始估计、校正量、锁定标志、耗时。 |
+| `sigdet_edge,l=...,r=...,p=...,v=...,t=...,vi=...,pi=...,co=...` | 启用 | `Core/App/Signal/Sweep/app_signal_sweep.c` | 与 `sigdet_final` 同步输出。 | 左右边界、峰值、谷值、阈值、谷点/峰点索引、粗扫中心；峰值/谷值/阈值单位为 ADC code。 |
+| `iq_pre,mi=...,mq=...,mag=...,fo_mhz=...,ph_urad=...,blk=...` | 启用 | `Core/App/LOG/app_adc_log.c` | 锁定后 IQ 分析成功，每秒一次。 | 去中心 I/Q 重心、合成幅度、残余频偏、内部相位累加、block 计数；I/Q 和 mag 单位为 ADC code，`fo_mhz` 实际单位为 mHz。 |
+| `iq_rot,rd=...,cd=...,ip=...,rh=...,rt=...,ch=...,ct=...,ov=...,rb=...` | 启用 | `Core/App/LOG/app_adc_log.c` | 锁定后验证快照有效，每秒一次。 | 原始/补偿后边缘相位差、改善比例、边缘幅度、overrun 和旋转计数；rd/cd 单位为微弧度，rh/rt/ch/ct 单位为 ADC code 累积幅度。 |
+| `iq_amp,i_amp=...,q_amp=...,i_mean=...,q_mean=...,mag=...,ph_urad=...,ph_mdeg=...,ph_deg=...,blk=...` | 启用 | `Core/App/LOG/app_adc_log.c` | 锁定后 IQ 分析成功，每秒一次。 | I/Q 绝对幅度、带符号重心、合成幅度、以 `+I` 为 x 正半轴的绝对相位；幅度单位为 ADC code，ph_urad 单位为微弧度，ph_mdeg 单位为毫度，ph_deg 单位为度。 |
+| `adc_health: isr(...), task(...), pend=..., ov=..., stk_adc=..., stk_printf=...` | 当前关闭 | `Core/App/LOG/app_adc_log.c` | `ADC_HEALTH_LOG_ENABLE=1`。 | ADC ISR/任务计数、挂起块、overrun、任务栈水位。 |
+| `adc_range,imin=...,imax=...,qmin=...,qmax=...,ivpp=...,qvpp=...` | 当前关闭 | `Core/App/LOG/app_adc_log.c` | `ADC_RANGE_LOG_ENABLE=1`。 | ADC 原始范围、Vpp、削顶和近轨统计；所有幅度/范围字段单位为 ADC code。 |
+| `vpp_stage,...` | 当前关闭 | `Core/App/Signal/Sweep/app_signal_sweep.c` | `APP_SIGDET_VPP_UART_TRACE_ENABLE=1`。 | 当前扫频阶段。 |
+| `vpp_begin,start,stop,step,stage` | 当前关闭 | `Core/App/Signal/Sweep/app_signal_sweep.c` | `APP_SIGDET_VPP_UART_TRACE_ENABLE=1`。 | 一轮扫频开始参数。 |
+| `vpp,lo_hz,total_vpp,i_vpp,q_vpp` | 当前关闭 | `Core/App/Signal/Sweep/app_signal_sweep.c` | `APP_SIGDET_VPP_UART_TRACE_ENABLE=1`。 | 扫频曲线表头，Vpp 单位为 ADC code。 |
+| `vpp,%lu,%lu,%lu,%lu` | 当前关闭 | `Core/App/Signal/Sweep/app_signal_sweep.c` | `APP_SIGDET_VPP_UART_TRACE_ENABLE=1`。 | 单个 LO 频点的总 Vpp、I Vpp、Q Vpp；Vpp 单位为 ADC code。 |
+| `vpp_%s_done,est=...,peak=...,valley=...,th=...,left=...,right=...` | 当前关闭 | `Core/App/Signal/Sweep/app_signal_sweep.c` | `APP_SIGDET_VPP_UART_TRACE_ENABLE=1`。 | 粗扫/细扫完成摘要，peak/valley/th 单位为 ADC code。 |
+| `vpp_done,est=...,peak=...,valley=...,th=...,left=...,right=...` | 当前关闭 | `Core/App/Signal/Sweep/app_signal_sweep.c` | `APP_SIGDET_VPP_UART_TRACE_ENABLE=1`。 | 扫频最终 Vpp 摘要，peak/valley/th 单位为 ADC code。 |
+| `mod,mode=...,stable=...,conf=...,rate=...,depth=...,dev=...,shift=...` | 当前关闭 | `Core/App/Signal/app_mod_detect.c` | `APP_MODDET_UART_TRACE_ENABLE=1`。 | 调制识别瞬时模式、稳定模式、置信度和参数。 |
+| `ui,mode=...,inst=...,conf=...,rate=...,depth=...,dev=...,shift=...` | 当前关闭 | `Core/App/Signal/app_mod_detect.c` | `APP_MODDET_UART_TRACE_ENABLE=1`。 | 给 UI/日志使用的调制识别摘要。 |
+
+## 当前调试建议
+
+- 如果只关心“频率是否闭环稳定”，看 `iq_pre.fo_mhz` 和 `iq_rot.rd/cd`。
+- 如果只关心“矢量是否靠近 `+I` 轴”，优先看 `iq_amp.ph_deg`、`iq_amp.i_mean`、`iq_amp.q_mean`。
+- 如果后续觉得日志太重复，可以保留：
+  - `iq_pre`：用于频偏和内部跟踪相位。
+  - `iq_amp`：用于绝对相位和 I/Q 轴向观察。
+  - 或者把 `iq_amp` 中重复的 `i_mean/q_mean/mag` 改名/精简，但当前先不删字段，避免影响正在做的串口对比。
+## 2026-05-13 新增相位 DPLL 调试日志
+
+### `car`
+
+示例：
+
+```text
+car,m=phase_lock,en=1,lk=1,pt=1,pv=1,pu=1,rf=91,uv=1570419,dc=1949,st=500
+```
+
+- `m`：当前载波闭环模式。`freq` 表示频率闭环，`phase_wait` 表示等待相位接管，`phase_lock` 表示相位环已经接管。
+- `en`：相位闭环开关，1 表示编译配置允许相位接管。
+- `lk`：锁定门控，1 表示扫频锁定后允许后级闭环。
+- `pt`：相位接管状态，1 表示 VRFE 当前由相位环负责微调。
+- `pv`：当前 block 的逐点相位圆均值是否可靠。
+- `pu`：本次相位环是否实际写入了新的 DAC 电压。
+- `rf`：IQ 预处理估计的残余频偏，单位 mHz；相位模式下主要作为保护退出条件。
+- `uv`：当前 VRFE DAC 目标电压，单位 uV。
+- `dc`：当前写入 DAC1 的 12-bit code。
+- `st`：频率稳定累计 block 数，达到门限后允许相位接管。
+
+### `carp`
+
+示例：
+
+```text
+carp,deg=81.295,tg=90000,de=107,ctl=94991,du=-1,u=256,rel=1000
+```
+
+- `deg`：当前相位误差，单位度；这是相对 `tg` 的误差，不是绝对相位本身。
+- `tg`：相位目标，单位毫度；当前 `90000` 表示目标 90 度。
+- `de`：相邻有效 block 的相位误差变化量，单位毫度，用于判断相位是否仍在滑过目标。
+- `ctl`：DPLL 合成控制量，单位毫度，等于相位误差叠加相位变化率阻尼后的结果。
+- `du`：最近一次相位 DPLL 输出到 VRFE 的电压增量，单位 uV。
+- `u`：逐点相位圆均值实际使用的采样点数；当前抽样配置下正常约为 256。
+- `rel`：圆均值一致性，单位千分比；1000 表示相位高度集中。
+
+### `carx`
+
+示例：
+
+```text
+carx,fl=-23,lim=3,br=0,pc=1106,fc=901
+```
+
+- `fl`：相位模式下 residual 频偏低通值，单位 mHz；用于判断相位接管后频偏是否重新变大。
+- `lim`：当前相位 DPLL 实际使用的单次 DAC 最大步进，单位 uV；目标近区内应降为 1。
+- `br`：相位误差跨越目标后触发 trim 衰减的累计次数。
+- `pc`：相位闭环实际写 DAC 的累计次数。
+- `fc`：频率闭环实际写 DAC 的累计次数。
+- 用途：判断当前是否已进入相位接管、是否在目标附近减速、以及相位模式内频率偏置是否失控。
+
+### 本轮调试关注点
+
+- 如果 `m=phase_lock` 且 `pt=1`，说明已经不是频率环在调 VRFE，而是相位环接管。
+- 如果 `pv=1,u=256,rel=1000`，说明当前 CW 相位测量可靠。
+- 如果 `du` 长时间为 0 而相位仍在转，说明控制量太弱或小数修正未累计到 DAC 最小可见步进。
+- 如果 `du` 经常达到 `±2` 但相位仍穿过目标，说明需要继续调整阻尼、极性或修正范围。
+- `iq_rot` 中 `ov=0,rb=0` 是本轮确认 ADC block 没有明显堆积的重要依据。
+
+## 2026-05-13 补充：carrier 调试日志临时提高到 100ms
+
+- `APP_ADC_CARRIER_SYNC_LOG_MS=100U`：当前为了相位 DPLL 调试，将 `car/carp` 输出周期临时改为 100ms。
+- 用途：观察 `deg/de/ctl/du/uv/rf` 的动态关系；1 秒日志会漏掉相位接近目标后的过冲细节。
+- 风险：串口输出量增加；本轮实测仍能看到 `iq_rot` 的 `ov=0,rb=0`，暂未发现 ADC block 堆积。
+- 后续：闭环参数稳定后建议恢复到 `1000U`，或增加运行模式宏区分调试日志和比赛日志。

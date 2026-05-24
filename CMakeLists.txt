@@ -106,6 +106,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/BoardFlash/app_board_flash.c
     Core/App/BoardFlash/board_flash_qspi_port.c
     Core/App/BoardFlash/board_flash_w25q64.c
+    Core/App/OCXO/app_ocxo_cal.c
 )
 
 # Add include paths
@@ -133,6 +134,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/Analyze
     Core/App/DEMODE
     Core/App/BoardFlash
+    Core/App/OCXO
 
     Drivers/CMSIS/DSP/Include
 )

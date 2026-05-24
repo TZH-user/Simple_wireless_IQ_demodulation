@@ -8,9 +8,32 @@
 #define RX_DAC_MIN       0U
 #define RX_DAC_MAX       4095U
 #define RX_DAC_CENTER    2048U
+#define RX_DAC_VREF_MV   3300U
 #define RX_ENV_DC_SHIFT  13U
 #define RX_AUDIO_GAIN_Q8 256
 #define RX_AUDIO_SMOOTH_SHIFT 1U
+
+/*
+ * 解调输出峰峰值微调入口，单位 mV，作用于 DAC1_OUT2(PA5)。
+ * AM/FM 是在原有解调波形基础上做比例微调；FSK/PSK 直接决定高低电平间距。
+ */
+#define RX_DEMOD_AM_OUT_VPP_MV   1000U
+#define RX_DEMOD_FM_OUT_VPP_MV   1000U
+#define RX_DEMOD_FSK_OUT_VPP_MV  1700U
+#define RX_DEMOD_PSK_OUT_VPP_MV  2340U
+#define RX_DEMOD_ANALOG_REF_VPP_MV 1000U
+
+#define RX_DAC_CODE_FROM_VPP_MV(vpp_mv) \
+    (((uint32_t)(vpp_mv) * RX_DAC_MAX + (RX_DAC_VREF_MV / 2U)) / RX_DAC_VREF_MV)
+#define RX_DAC_HALF_SPAN_FROM_VPP_MV(vpp_mv) \
+    (RX_DAC_CODE_FROM_VPP_MV(vpp_mv) / 2U)
+#define RX_DAC_LOW_FROM_VPP_MV(vpp_mv) \
+    ((RX_DAC_HALF_SPAN_FROM_VPP_MV(vpp_mv) >= RX_DAC_CENTER) ? RX_DAC_MIN : (RX_DAC_CENTER - RX_DAC_HALF_SPAN_FROM_VPP_MV(vpp_mv)))
+#define RX_DAC_HIGH_FROM_VPP_MV(vpp_mv) \
+    (((RX_DAC_CENTER + RX_DAC_HALF_SPAN_FROM_VPP_MV(vpp_mv)) > RX_DAC_MAX) ? RX_DAC_MAX : (RX_DAC_CENTER + RX_DAC_HALF_SPAN_FROM_VPP_MV(vpp_mv)))
+
+#define RX_DEFAULT_SYMBOL_RATE_HZ 10000U
+#define RX_SYMBOL_RATE_MIN_HZ     1000U
 
 #define RX_FM_DC_SHIFT          10U
 #define RX_FM_SMOOTH_SHIFT      1U
@@ -25,8 +48,11 @@
 #define RX_FSK_FREQ_DC_SHIFT    10U
 #define RX_FSK_SMOOTH_SHIFT     0U
 #define RX_FSK_DAC_THRESHOLD    0  /* FSK 判决门限；频偏平滑值高于它输出高电平，低于它输出低电平。 */
-#define RX_FSK_DAC_LOW          1000U /* FSK 解调输出低电平 DAC 码值；调低会让低电平更低。 */
-#define RX_FSK_DAC_HIGH         3100U /* FSK 解调输出高电平 DAC 码值；调高会让高电平更高。 */
+#define RX_FSK_DAC_LOW          RX_DAC_LOW_FROM_VPP_MV(RX_DEMOD_FSK_OUT_VPP_MV)
+#define RX_FSK_DAC_HIGH         RX_DAC_HIGH_FROM_VPP_MV(RX_DEMOD_FSK_OUT_VPP_MV)
+#define RX_FSK_CLUSTER_SHIFT    3U
+#define RX_FSK_MIN_SPREAD_Q12   24
+#define RX_SYMBOL_PHASE_ONE_Q16 65536U
 
 static int32_t g_fsk_i_dc = 0;
 static int32_t g_fsk_q_dc = 0;
@@ -34,9 +60,24 @@ static uint8_t g_fsk_iq_dc_valid = 0U;
 
 static int32_t g_fsk_freq_dc = 0;
 static int32_t g_fsk_smooth = 0;
+static int32_t g_fsk_prev_i = 0;
+static int32_t g_fsk_prev_q = 0;
+static uint8_t g_fsk_prev_valid = 0U;
+static int64_t g_fsk_sym_acc = 0;
+static uint32_t g_fsk_sym_count = 0U;
+static uint32_t g_fsk_symbol_phase_q16 = 0U;
+static uint32_t g_fsk_symbol_step_q16 = 1U;
+static int32_t g_fsk_low_est = 0;
+static int32_t g_fsk_high_est = 0;
+static int32_t g_fsk_threshold = 0;
+static uint8_t g_fsk_cluster_valid = 0U;
+static uint16_t g_fsk_last_dac = RX_FSK_DAC_LOW;
 
 static uint32_t g_sample_rate_hz = 480000U;
 static RxMode g_rx_mode = RX_MODE_AM;
+static uint32_t g_rx_symbol_rate_hz = RX_DEFAULT_SYMBOL_RATE_HZ;
+static int32_t g_rx_low_if_hz = 0;
+static uint32_t g_rx_fsk_separation_hz = 0U;
 static int32_t g_env_dc_q8 = 0;
 static uint8_t g_env_dc_valid = 0U;
 
@@ -69,8 +110,10 @@ static uint8_t g_fm_phase_valid = 0U;
 #define RX_PSK_IF_HZ            0.0f   /* 改成你的实际低中频 */
 #define RX_PSK_TWO_PI           6.28318530717958647692f
 #define RX_PSK_IQ_DC_SHIFT      10U
-#define RX_PSK_DAC_LOW          100U
-#define RX_PSK_DAC_HIGH         3000U
+#define RX_PSK_DAC_LOW          RX_DAC_LOW_FROM_VPP_MV(RX_DEMOD_PSK_OUT_VPP_MV)
+#define RX_PSK_DAC_HIGH         RX_DAC_HIGH_FROM_VPP_MV(RX_DEMOD_PSK_OUT_VPP_MV)
+#define RX_PSK_RESIDUAL_LOOP_GAIN 0.02f
+#define RX_PSK_AXIS_LOOP_GAIN     0.05f
 
 static int32_t g_psk_i_dc = 0;
 static int32_t g_psk_q_dc = 0;
@@ -79,17 +122,21 @@ static uint8_t g_psk_iq_dc_valid = 0U;
 static float g_psk_nco_phase = 0.0f;
 static float g_psk_nco_step = 0.0f;
 static uint8_t g_psk_nco_valid = 0U;
+static float g_psk_residual_phase = 0.0f;
+static float g_psk_residual_step = 0.0f;
+static float g_psk_prev_z2_i = 0.0f;
+static float g_psk_prev_z2_q = 0.0f;
+static uint8_t g_psk_z2_valid = 0U;
 
 static int64_t g_psk_sym_i_acc = 0;
 static int64_t g_psk_sym_q_acc = 0;
 static uint32_t g_psk_sym_count = 0U;
-static uint32_t g_psk_samples_per_symbol = 48U;
+static uint32_t g_psk_symbol_phase_q16 = 0U;
+static uint32_t g_psk_symbol_step_q16 = 1U;
+static float g_psk_axis_m20 = 1.0f;
+static float g_psk_axis_m11 = 0.0f;
+static uint8_t g_psk_axis_valid = 0U;
 
-static int64_t g_psk_prev_sym_i = 0;
-static int64_t g_psk_prev_sym_q = 0;
-static uint8_t g_psk_prev_valid = 0U;
-
-static uint8_t g_psk_bit_state = 0U;
 static uint16_t g_psk_last_dac = RX_PSK_DAC_LOW;
 
 
@@ -142,6 +189,169 @@ static int32_t rx_iq_fm_discriminator(int32_t i_now, int32_t q_now)
     }
 
     return (int32_t)fm_q;
+}
+
+static int32_t rx_shift_round_s32(int32_t value, uint32_t shift)
+{
+    int32_t half;
+
+    if (shift == 0U)
+    {
+        return value;
+    }
+
+    half = (int32_t)(1UL << (shift - 1U));
+    if (value >= 0)
+    {
+        return (value + half) >> shift;
+    }
+
+    return -(((-value) + half) >> shift);
+}
+
+static uint32_t rx_demod_resolve_symbol_rate(uint32_t symbol_rate_hz)
+{
+    uint32_t max_symbol_rate_hz = g_sample_rate_hz / 2U;
+
+    if (max_symbol_rate_hz < RX_SYMBOL_RATE_MIN_HZ)
+    {
+        max_symbol_rate_hz = RX_SYMBOL_RATE_MIN_HZ;
+    }
+
+    if ((symbol_rate_hz < RX_SYMBOL_RATE_MIN_HZ) ||
+        (symbol_rate_hz > max_symbol_rate_hz))
+    {
+        return RX_DEFAULT_SYMBOL_RATE_HZ;
+    }
+
+    return symbol_rate_hz;
+}
+
+static uint32_t rx_demod_symbol_step_q16(void)
+{
+    uint32_t symbol_rate_hz = rx_demod_resolve_symbol_rate(g_rx_symbol_rate_hz);
+    uint64_t step_q16;
+
+    if (g_sample_rate_hz == 0U)
+    {
+        return 1U;
+    }
+
+    step_q16 = ((uint64_t)symbol_rate_hz << 16) / (uint64_t)g_sample_rate_hz;
+    if (step_q16 == 0ULL)
+    {
+        step_q16 = 1ULL;
+    }
+
+    if (step_q16 > RX_SYMBOL_PHASE_ONE_Q16)
+    {
+        step_q16 = RX_SYMBOL_PHASE_ONE_Q16;
+    }
+
+    return (uint32_t)step_q16;
+}
+
+static int32_t rx_fsk_min_spread_q12(void)
+{
+    int32_t expected_spread_q12;
+
+    if ((g_rx_fsk_separation_hz == 0U) || (g_sample_rate_hz == 0U))
+    {
+        return RX_FSK_MIN_SPREAD_Q12;
+    }
+
+    /*
+     * 鉴频输出近似为 Q12 的相邻采样相位差：
+     * spread ~= 2*pi*f_sep/Fs*4096，25736 约等于 2*pi*4096。
+     * 这里只取期望频差的 1/5 作为“已看到双簇”的下限，避免噪声抖动当成 FSK 双态。
+     */
+    expected_spread_q12 = (int32_t)(((uint64_t)g_rx_fsk_separation_hz * 25736ULL) /
+                                    (uint64_t)g_sample_rate_hz);
+    expected_spread_q12 /= 5;
+
+    if (expected_spread_q12 < RX_FSK_MIN_SPREAD_Q12)
+    {
+        expected_spread_q12 = RX_FSK_MIN_SPREAD_Q12;
+    }
+
+    return expected_spread_q12;
+}
+
+static int32_t rx_fsk_discriminator(int32_t i_now, int32_t q_now)
+{
+    int32_t di;
+    int32_t dq;
+    int64_t num;
+    int64_t den;
+    int64_t freq_q12;
+
+    if (g_fsk_prev_valid == 0U)
+    {
+        g_fsk_prev_i = i_now;
+        g_fsk_prev_q = q_now;
+        g_fsk_prev_valid = 1U;
+        return 0;
+    }
+
+    di = i_now - g_fsk_prev_i;
+    dq = q_now - g_fsk_prev_q;
+
+    num = ((int64_t)i_now * (int64_t)dq) - ((int64_t)q_now * (int64_t)di);
+    den = ((int64_t)i_now * (int64_t)i_now) + ((int64_t)q_now * (int64_t)q_now);
+
+    g_fsk_prev_i = i_now;
+    g_fsk_prev_q = q_now;
+
+    if (den < 64)
+    {
+        return 0;
+    }
+
+    freq_q12 = (num << 12) / den;
+
+    if (freq_q12 > 2147483647LL)
+    {
+        return 2147483647;
+    }
+
+    if (freq_q12 < -2147483647LL)
+    {
+        return -2147483647;
+    }
+
+    return (int32_t)freq_q12;
+}
+
+static void rx_fsk_update_clusters(int32_t sym_mean)
+{
+    if (g_fsk_cluster_valid == 0U)
+    {
+        g_fsk_low_est = sym_mean;
+        g_fsk_high_est = sym_mean;
+        g_fsk_threshold = sym_mean;
+        g_fsk_cluster_valid = 1U;
+        return;
+    }
+
+    if (sym_mean < g_fsk_low_est)
+    {
+        g_fsk_low_est = sym_mean;
+    }
+    else if (sym_mean < g_fsk_threshold)
+    {
+        g_fsk_low_est += rx_shift_round_s32(sym_mean - g_fsk_low_est, RX_FSK_CLUSTER_SHIFT);
+    }
+
+    if (sym_mean > g_fsk_high_est)
+    {
+        g_fsk_high_est = sym_mean;
+    }
+    else if (sym_mean >= g_fsk_threshold)
+    {
+        g_fsk_high_est += rx_shift_round_s32(sym_mean - g_fsk_high_est, RX_FSK_CLUSTER_SHIFT);
+    }
+
+    g_fsk_threshold = (int32_t)(((int64_t)g_fsk_low_est + (int64_t)g_fsk_high_est) / 2LL);
 }
 
 static int32_t __attribute__((unused)) rx_iq_phase_diff_freq(int32_t i_now, int32_t q_now)
@@ -204,6 +414,23 @@ static uint16_t rx_clip_to_dac(int32_t v)
     return (uint16_t)v;
 }
 
+/* 按目标峰峰值对 DAC 波形做比例微调，中心点保持在 RX_DAC_CENTER。 */
+static int32_t rx_scale_dac_vpp(int32_t dac_code, uint32_t target_vpp_mv, uint32_t ref_vpp_mv)
+{
+    int32_t centered;
+    int64_t scaled;
+
+    if ((target_vpp_mv == ref_vpp_mv) || (ref_vpp_mv == 0U))
+    {
+        return dac_code;
+    }
+
+    centered = dac_code - (int32_t)RX_DAC_CENTER;
+    scaled = ((int64_t)centered * (int64_t)target_vpp_mv) / (int64_t)ref_vpp_mv;
+
+    return (int32_t)RX_DAC_CENTER + (int32_t)scaled;
+}
+
 static uint32_t rx_isqrt_u32(uint32_t x)
 {
     uint32_t op = x;
@@ -262,6 +489,18 @@ void RxDemod_Reset(void)
 
     g_fsk_freq_dc = 0;
     g_fsk_smooth = 0;
+    g_fsk_prev_i = 0;
+    g_fsk_prev_q = 0;
+    g_fsk_prev_valid = 0U;
+    g_fsk_sym_acc = 0;
+    g_fsk_sym_count = 0U;
+    g_fsk_symbol_phase_q16 = 0U;
+    g_fsk_symbol_step_q16 = rx_demod_symbol_step_q16();
+    g_fsk_low_est = 0;
+    g_fsk_high_est = 0;
+    g_fsk_threshold = 0;
+    g_fsk_cluster_valid = 0U;
+    g_fsk_last_dac = RX_FSK_DAC_LOW;
 
     g_psk_i_dc = 0;
     g_psk_q_dc = 0;
@@ -270,21 +509,22 @@ void RxDemod_Reset(void)
     g_psk_nco_phase = 0.0f;
     g_psk_nco_step = 0.0f;
     g_psk_nco_valid = 0U;
+    g_psk_residual_phase = 0.0f;
+    g_psk_residual_step = 0.0f;
+    g_psk_prev_z2_i = 0.0f;
+    g_psk_prev_z2_q = 0.0f;
+    g_psk_z2_valid = 0U;
 
     g_psk_sym_i_acc = 0;
     g_psk_sym_q_acc = 0;
     g_psk_sym_count = 0U;
-    g_psk_samples_per_symbol = g_sample_rate_hz / RX_PSK_SYMBOL_RATE_HZ;
-    if (g_psk_samples_per_symbol == 0U)
-    {
-        g_psk_samples_per_symbol = 1U;
-    }
+    g_psk_symbol_phase_q16 = 0U;
+    g_psk_symbol_step_q16 = rx_demod_symbol_step_q16();
 
-    g_psk_prev_sym_i = 0;
-    g_psk_prev_sym_q = 0;
-    g_psk_prev_valid = 0U;
+    g_psk_axis_m20 = 1.0f;
+    g_psk_axis_m11 = 0.0f;
+    g_psk_axis_valid = 0U;
 
-    g_psk_bit_state = 0U;
     g_psk_last_dac = RX_PSK_DAC_LOW;
 }
 
@@ -292,6 +532,9 @@ void RxDemod_Init(uint32_t sample_rate_hz)
 {
     g_sample_rate_hz = sample_rate_hz;
     g_rx_mode = RX_MODE_AM;
+    g_rx_symbol_rate_hz = RX_DEFAULT_SYMBOL_RATE_HZ;
+    g_rx_low_if_hz = 0;
+    g_rx_fsk_separation_hz = 0U;
     RxDemod_Reset();
 }
 
@@ -303,6 +546,16 @@ void RxDemod_SetMode(RxMode mode)
     }
 
     g_rx_mode = mode;
+}
+
+void RxDemod_ConfigureSignal(uint32_t symbol_rate_hz,
+                             int32_t low_if_hz,
+                             uint32_t fsk_separation_hz)
+{
+    g_rx_symbol_rate_hz = rx_demod_resolve_symbol_rate(symbol_rate_hz);
+    g_rx_low_if_hz = low_if_hz;
+    g_rx_fsk_separation_hz = fsk_separation_hz;
+    RxDemod_Reset();
 }
 
 void RxDemod_AM_ProcessBlock(const uint16_t *i_adc, const uint16_t *q_adc, uint32_t n, uint16_t *dac_out)
@@ -363,6 +616,7 @@ void RxDemod_AM_ProcessBlock(const uint16_t *i_adc, const uint16_t *q_adc, uint3
         audio_q8 = env_q8 - g_env_dc_q8;
 
         y = (int32_t)RX_DAC_CENTER + ((audio_q8 * RX_AUDIO_GAIN_Q8) >> 16);
+        y = rx_scale_dac_vpp(y, RX_DEMOD_AM_OUT_VPP_MV, RX_DEMOD_ANALOG_REF_VPP_MV);
 
         dac_out[i] = rx_clip_to_dac(y);
     }
@@ -412,12 +666,8 @@ void RxDemod_FM_ProcessBlock(const uint16_t *i_adc,
         /* 很轻的平滑，保留 10kHz 调制波 */
         g_fm_smooth += (fm_ac - g_fm_smooth) >> RX_FM_SMOOTH_SHIFT;
 
-        /*
-         * 输出到 12bit DAC。
-         * 波形太小：RX_FM_DAC_GAIN_SHIFT 改小，比如 4 或 3。
-         * 波形削顶：RX_FM_DAC_GAIN_SHIFT 改大，比如 6 或 7。
-         */
         y = (int32_t)RX_DAC_CENTER + (g_fm_smooth >> RX_FM_DAC_GAIN_SHIFT);
+        y = rx_scale_dac_vpp(y, RX_DEMOD_FM_OUT_VPP_MV, RX_DEMOD_ANALOG_REF_VPP_MV);
 
         dac_out[i] = rx_clip_to_dac(y);
     }
@@ -493,6 +743,7 @@ void RxDemod_FM_CMSIS_ProcessBlock(const uint16_t *i_adc,
 
         y = (int32_t)((float32_t)RX_DAC_CENTER +
                       (g_fm_lpf * RX_FM_CMSIS_DAC_GAIN));
+        y = rx_scale_dac_vpp(y, RX_DEMOD_FM_OUT_VPP_MV, RX_DEMOD_ANALOG_REF_VPP_MV);
 
         dac_out[i] = rx_clip_to_dac(y);
     }
@@ -525,28 +776,64 @@ void RxDemod_FSK_ProcessBlock(const uint16_t *i_adc,
     dc_i = (int32_t)(sum_i / n);
     dc_q = (int32_t)(sum_q / n);
 
+    if (g_fsk_iq_dc_valid == 0U)
+    {
+        g_fsk_i_dc = dc_i;
+        g_fsk_q_dc = dc_q;
+        g_fsk_iq_dc_valid = 1U;
+    }
+    else
+    {
+        g_fsk_i_dc += rx_shift_round_s32(dc_i - g_fsk_i_dc, RX_FSK_IQ_DC_SHIFT);
+        g_fsk_q_dc += rx_shift_round_s32(dc_q - g_fsk_q_dc, RX_FSK_IQ_DC_SHIFT);
+    }
+
+    if (g_fsk_symbol_step_q16 == 0U)
+    {
+        g_fsk_symbol_step_q16 = rx_demod_symbol_step_q16();
+    }
+
     for (i = 0U; i < n; ++i)
     {
-        int32_t i_now = (int32_t)i_adc[i] - dc_i;
-        int32_t q_now = (int32_t)q_adc[i] - dc_q;
-        int32_t fm_raw;
-        int32_t fm_ac;
+        int32_t i_now = (int32_t)i_adc[i] - g_fsk_i_dc;
+        int32_t q_now = (int32_t)q_adc[i] - g_fsk_q_dc;
+        int32_t freq_raw;
 
-        /* 完全复用 FM 的相位差分鉴频前端 */
-        fm_raw = rx_iq_fm_discriminator(i_now, q_now);
+        freq_raw = rx_fsk_discriminator(i_now, q_now);
+        g_fsk_smooth += rx_shift_round_s32(freq_raw - g_fsk_smooth, RX_FSK_SMOOTH_SHIFT);
 
-        /* 完全复用 FM 的去直流和平滑状态 */
-        g_fm_dc += (fm_raw - g_fm_dc) >> RX_FM_DC_SHIFT;
-        fm_ac = fm_raw - g_fm_dc;
+        g_fsk_sym_acc += g_fsk_smooth;
+        g_fsk_sym_count++;
+        g_fsk_symbol_phase_q16 += g_fsk_symbol_step_q16;
 
-        g_fm_smooth += (fm_ac - g_fm_smooth) >> RX_FM_SMOOTH_SHIFT;
+        if (g_fsk_symbol_phase_q16 >= RX_SYMBOL_PHASE_ONE_Q16)
+        {
+            int32_t sym_mean = (int32_t)(g_fsk_sym_acc / (int64_t)g_fsk_sym_count);
+            int32_t spread;
 
-        /* FSK 输出判决后的高低电平，方便在 DAC1_OUT2(PA5) 直接观察 0/1。 */
-        dac_out[i] = (g_fm_smooth >= RX_FSK_DAC_THRESHOLD) ? RX_FSK_DAC_HIGH : RX_FSK_DAC_LOW;
-        //if(y>2300)
-        //dac_out[i] = 3600;
-        //else
-        //dac_out[i] = 1800;
+            g_fsk_symbol_phase_q16 -= RX_SYMBOL_PHASE_ONE_Q16;
+
+            rx_fsk_update_clusters(sym_mean);
+            spread = g_fsk_high_est - g_fsk_low_est;
+            if (spread < 0)
+            {
+                spread = -spread;
+            }
+
+            /*
+             * 无码头时，数字输出整体反向是允许的；这里只保证输出跟随两个频率簇，
+             * 不强行规定“高频=1”还是“低频=1”。
+             */
+            if (spread >= rx_fsk_min_spread_q12())
+            {
+                g_fsk_last_dac = (sym_mean >= g_fsk_threshold) ? RX_FSK_DAC_HIGH : RX_FSK_DAC_LOW;
+            }
+
+            g_fsk_sym_acc = 0;
+            g_fsk_sym_count = 0U;
+        }
+
+        dac_out[i] = g_fsk_last_dac;
     }
 }
 
@@ -672,15 +959,14 @@ void RxDemod_PSK_ProcessBlock(const uint16_t *i_adc,
 
     n = rx_demod_limit_count(n);
 
-    g_psk_samples_per_symbol = g_sample_rate_hz / RX_PSK_SYMBOL_RATE_HZ;
-    if (g_psk_samples_per_symbol == 0U)
+    if (g_psk_symbol_step_q16 == 0U)
     {
-        g_psk_samples_per_symbol = 1U;
+        g_psk_symbol_step_q16 = rx_demod_symbol_step_q16();
     }
 
     if (g_psk_nco_valid == 0U)
     {
-        g_psk_nco_step = RX_PSK_TWO_PI * RX_PSK_IF_HZ / (float)g_sample_rate_hz;
+        g_psk_nco_step = RX_PSK_TWO_PI * (float)g_rx_low_if_hz / (float)g_sample_rate_hz;
         g_psk_nco_phase = 0.0f;
         g_psk_nco_valid = 1U;
     }
@@ -702,8 +988,8 @@ void RxDemod_PSK_ProcessBlock(const uint16_t *i_adc,
     }
     else
     {
-        g_psk_i_dc += (blk_mean_i - g_psk_i_dc) >> RX_PSK_IQ_DC_SHIFT;
-        g_psk_q_dc += (blk_mean_q - g_psk_q_dc) >> RX_PSK_IQ_DC_SHIFT;
+        g_psk_i_dc += rx_shift_round_s32(blk_mean_i - g_psk_i_dc, RX_PSK_IQ_DC_SHIFT);
+        g_psk_q_dc += rx_shift_round_s32(blk_mean_q - g_psk_q_dc, RX_PSK_IQ_DC_SHIFT);
     }
 
     for (i = 0U; i < n; ++i)
@@ -713,18 +999,54 @@ void RxDemod_PSK_ProcessBlock(const uint16_t *i_adc,
 
         float c = cosf(g_psk_nco_phase);
         float s = sinf(g_psk_nco_phase);
+        float bb_i_f;
+        float bb_q_f;
+        float z2_i;
+        float z2_q;
+        float rc;
+        float rs;
+        float comp_i;
+        float comp_q;
 
-        int32_t bb_i;
-        int32_t bb_q;
+        /* 下变频：rx * exp(-j*w*n)，low_if_hz 可以为负。 */
+        bb_i_f = ((float)i_now * c) + ((float)q_now * s);
+        bb_q_f = ((float)q_now * c) - ((float)i_now * s);
 
         /*
-         * 下变频：rx * exp(-j*w*n)
+         * BPSK 平方环路估计残余频偏。
+         * 平方后数据相位被消掉，只留下两倍载波残差；再乘 0.5 得到原始残差步进。
          */
-        bb_i = (int32_t)(((float)i_now * c) + ((float)q_now * s));
-        bb_q = (int32_t)(((float)q_now * c) - ((float)i_now * s));
+        z2_i = (bb_i_f * bb_i_f) - (bb_q_f * bb_q_f);
+        z2_q = 2.0f * bb_i_f * bb_q_f;
+        if (g_psk_z2_valid != 0U)
+        {
+            float dot = (z2_i * g_psk_prev_z2_i) + (z2_q * g_psk_prev_z2_q);
+            float cross = (z2_q * g_psk_prev_z2_i) - (z2_i * g_psk_prev_z2_q);
+            float residual_step_est = 0.5f * atan2f(cross, dot);
 
-        g_psk_sym_i_acc += bb_i;
-        g_psk_sym_q_acc += bb_q;
+            g_psk_residual_step += RX_PSK_RESIDUAL_LOOP_GAIN * (residual_step_est - g_psk_residual_step);
+        }
+        g_psk_prev_z2_i = z2_i;
+        g_psk_prev_z2_q = z2_q;
+        g_psk_z2_valid = 1U;
+
+        g_psk_residual_phase += g_psk_residual_step;
+        if (g_psk_residual_phase >= RX_PSK_TWO_PI)
+        {
+            g_psk_residual_phase -= RX_PSK_TWO_PI;
+        }
+        else if (g_psk_residual_phase < 0.0f)
+        {
+            g_psk_residual_phase += RX_PSK_TWO_PI;
+        }
+
+        rc = cosf(g_psk_residual_phase);
+        rs = sinf(g_psk_residual_phase);
+        comp_i = (bb_i_f * rc) + (bb_q_f * rs);
+        comp_q = (bb_q_f * rc) - (bb_i_f * rs);
+
+        g_psk_sym_i_acc += (int32_t)comp_i;
+        g_psk_sym_q_acc += (int32_t)comp_q;
         g_psk_sym_count++;
 
         g_psk_nco_phase += g_psk_nco_step;
@@ -732,31 +1054,53 @@ void RxDemod_PSK_ProcessBlock(const uint16_t *i_adc,
         {
             g_psk_nco_phase -= RX_PSK_TWO_PI;
         }
-
-        if (g_psk_sym_count >= g_psk_samples_per_symbol)
+        else if (g_psk_nco_phase < 0.0f)
         {
-            int64_t sym_i = g_psk_sym_i_acc;
-            int64_t sym_q = g_psk_sym_q_acc;
+            g_psk_nco_phase += RX_PSK_TWO_PI;
+        }
 
-            if (g_psk_prev_valid != 0U)
+        g_psk_symbol_phase_q16 += g_psk_symbol_step_q16;
+        if (g_psk_symbol_phase_q16 >= RX_SYMBOL_PHASE_ONE_Q16)
+        {
+            float sym_i;
+            float sym_q;
+            float m20;
+            float m11;
+            float axis_angle;
+            float projection;
+
+            g_psk_symbol_phase_q16 -= RX_SYMBOL_PHASE_ONE_Q16;
+            if (g_psk_sym_count == 0U)
             {
-                int64_t dot = (sym_i * g_psk_prev_sym_i) + (sym_q * g_psk_prev_sym_q);
-
-                /*
-                 * dot < 0 表示相邻符号相位约 180 度跳变：
-                 * 有跳变 -> bit 状态翻转；无跳变 -> 保持。
-                 */
-                if (dot < 0)
-                {
-                    g_psk_bit_state ^= 1U;
-                }
-
-                g_psk_last_dac = (g_psk_bit_state != 0U) ? RX_PSK_DAC_HIGH : RX_PSK_DAC_LOW;
+                dac_out[i] = g_psk_last_dac;
+                continue;
             }
 
-            g_psk_prev_sym_i = sym_i;
-            g_psk_prev_sym_q = sym_q;
-            g_psk_prev_valid = 1U;
+            sym_i = (float)g_psk_sym_i_acc / (float)g_psk_sym_count;
+            sym_q = (float)g_psk_sym_q_acc / (float)g_psk_sym_count;
+            m20 = (sym_i * sym_i) - (sym_q * sym_q);
+            m11 = 2.0f * sym_i * sym_q;
+
+            if (g_psk_axis_valid == 0U)
+            {
+                g_psk_axis_m20 = m20;
+                g_psk_axis_m11 = m11;
+                g_psk_axis_valid = 1U;
+            }
+            else
+            {
+                g_psk_axis_m20 += RX_PSK_AXIS_LOOP_GAIN * (m20 - g_psk_axis_m20);
+                g_psk_axis_m11 += RX_PSK_AXIS_LOOP_GAIN * (m11 - g_psk_axis_m11);
+            }
+
+            axis_angle = 0.5f * atan2f(g_psk_axis_m11, g_psk_axis_m20);
+            projection = (sym_i * cosf(axis_angle)) + (sym_q * sinf(axis_angle));
+
+            /*
+             * 无码头 BPSK 的整体极性天然不确定；这里只输出相干判决后的双电平，
+             * 不强行规定哪个相位必须对应逻辑 1。
+             */
+            g_psk_last_dac = (projection < 0.0f) ? RX_PSK_DAC_HIGH : RX_PSK_DAC_LOW;
 
             g_psk_sym_i_acc = 0;
             g_psk_sym_q_acc = 0;

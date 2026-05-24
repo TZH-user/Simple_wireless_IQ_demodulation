@@ -11,6 +11,7 @@
 #include "DemodTask.h"
 #include "SI5351.h"
 #include "app_dds_ctrl.h"
+#include "app_ocxo_cal.h"
 #include "RtosTypes.h"
 #include "lvgl.h"
 
@@ -21,7 +22,8 @@
 #define UI_STATUS_TAG_TEXT_Y_PAD 11
 #define UI_HW_TAG_WIDTH 104
 #define UI_HW_TAG_HEIGHT 24
-#define UI_CAL_TAG_WIDTH 84
+#define UI_CAL_TAG_WIDTH 118
+#define UI_OCXO_TAG_WIDTH 118
 #define UI_HW_TAG_GAP 8
 #define UI_MODE_BUTTON_WIDTH 220
 #define UI_MODE_BUTTON_HEIGHT 70
@@ -30,6 +32,8 @@
 #define UI_DASHBOARD_W 776
 #define UI_DASHBOARD_H 358
 #define UI_ACTION_X 520
+#define UI_CAL_SAVE_OK_BLINK_MS 3000U
+#define UI_CAL_SAVE_OK_BLINK_PERIOD_MS 400U
 
 typedef enum
 {
@@ -42,12 +46,28 @@ typedef enum
   APP_UI_STATUS_IDLE = 0,
   APP_UI_STATUS_CALIBRATING,
   APP_UI_STATUS_CAL_DONE,
+  APP_UI_STATUS_OCXO_CAL,
   APP_UI_STATUS_SWEEP,
   APP_UI_STATUS_UNLOCKED,
   APP_UI_STATUS_ANALYZING,
   APP_UI_STATUS_DEMOD,
   APP_UI_STATUS_DONE
 } app_ui_status_t;
+
+typedef enum
+{
+  APP_UI_OCXO_STEP = 0,
+  APP_UI_OCXO_DEC,
+  APP_UI_OCXO_INC,
+  APP_UI_OCXO_SAVE,
+  APP_UI_AUTO_TASK_TOGGLE
+} app_ui_ocxo_action_t;
+
+typedef enum
+{
+  APP_UI_CMD_MODE = 0,
+  APP_UI_CMD_OCXO_ACTION
+} app_ui_command_t;
 
 typedef struct
 {
@@ -57,6 +77,7 @@ typedef struct
   lv_obj_t *freq_value;
   lv_obj_t *scan_status;
   lv_obj_t *cal_status;
+  lv_obj_t *ocxo_status;
   lv_obj_t *adc_ref_status;
   lv_obj_t *si5351_status;
   lv_obj_t *ad9959_status;
@@ -66,8 +87,16 @@ typedef struct
   lv_obj_t *demod_value;
   lv_obj_t *spectrum_value;
   lv_obj_t *overall_status;
+  lv_obj_t *ocxo_value;
   lv_obj_t *calibrate_btn;
   lv_obj_t *task_btn;
+  lv_obj_t *ocxo_btn;
+  lv_obj_t *ocxo_step_btn;
+  lv_obj_t *ocxo_dec_btn;
+  lv_obj_t *ocxo_inc_btn;
+  lv_obj_t *ocxo_save_btn;
+  lv_obj_t *auto_task_btn;
+  lv_obj_t *auto_task_label;
   lv_obj_t *enter_demod_btn;
 
   lv_obj_t *demod_title;
@@ -78,7 +107,9 @@ typedef struct
   lv_chart_series_t *demod_series;
 
   uint32_t last_refresh_tick;
+  uint32_t cal_save_ok_tick;
   app_ui_page_t current_page;
+  moddetect_cal_state_t last_cal_state;
 } app_lvgl_ui_ctx_t;
 
 static app_lvgl_ui_ctx_t g_ui;
@@ -96,14 +127,30 @@ static lv_obj_t *App_LvglUiCreateModeButton(lv_obj_t *parent,
                                             lv_coord_t x,
                                             lv_coord_t y,
                                             moddetect_run_mode_t mode);
+static lv_obj_t *App_LvglUiCreateOcxoButton(lv_obj_t *parent,
+                                            const char *text,
+                                            lv_coord_t x,
+                                            lv_coord_t y,
+                                            lv_coord_t w,
+                                            app_ui_ocxo_action_t action);
 static void App_LvglUiFormatFreq(char *out, uint32_t out_len, uint32_t hz);
 static const char *App_LvglUiAnalyzeModeText(analyze_mode_t mode);
 static void App_LvglUiFormatAnalyzeParam(char *out, uint32_t out_len, const analyze_result_t *result);
 static void App_LvglUiSetStatus(app_ui_status_t status);
 static void App_LvglUiSetHwStatus(lv_obj_t *status_label, const char *text, lv_color_t bg);
+static void App_LvglUiSetCalBorder(uint8_t active);
+static void App_LvglUiSetOcxoControlsVisible(uint8_t visible);
+static app_ui_status_t App_LvglUiResolveRunStatus(const moddetect_task_stats_t *stats, const demod_task_stats_t *demod_stats);
+static uint8_t App_LvglUiShouldShowOcxoControls(const moddetect_task_stats_t *stats);
+static void App_LvglUiRefreshAutoTaskButton(const app_ocxo_cal_status_t *ocxo_status);
+static void App_LvglUiRefreshOcxoControls(const moddetect_task_stats_t *stats, const app_ocxo_cal_status_t *ocxo_status);
+static void App_LvglUiRefreshResult(const moddetect_task_stats_t *stats, const analyze_result_t *result);
+static void App_LvglUiRefreshQuality(const moddetect_task_stats_t *stats);
 static void App_LvglUiRefreshHwStatus(const moddetect_task_stats_t *stats);
 static void App_LvglUiRefreshOverallStatus(const moddetect_task_stats_t *stats, const demod_task_stats_t *demod_stats);
+static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value);
 static void App_LvglUiModeButtonEventCb(lv_event_t *event);
+static void App_LvglUiOcxoButtonEventCb(lv_event_t *event);
 static void App_LvglUiShowPage(app_ui_page_t page);
 
 void App_LvglUiInit(void)
@@ -186,6 +233,21 @@ void App_LvglUiInit(void)
                -(16 + (3 * UI_HW_TAG_WIDTH) + (3 * UI_HW_TAG_GAP)),
                10);
 
+  g_ui.ocxo_status = lv_label_create(g_ui.detect_page);
+  lv_obj_set_size(g_ui.ocxo_status, UI_OCXO_TAG_WIDTH, UI_HW_TAG_HEIGHT);
+  lv_label_set_long_mode(g_ui.ocxo_status, LV_LABEL_LONG_MODE_CLIP);
+  lv_obj_set_style_radius(g_ui.ocxo_status, 8, 0);
+  lv_obj_set_style_bg_opa(g_ui.ocxo_status, LV_OPA_COVER, 0);
+  lv_obj_set_style_text_color(g_ui.ocxo_status, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_text_align(g_ui.ocxo_status, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_font(g_ui.ocxo_status, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_pad_top(g_ui.ocxo_status, 3, 0);
+  App_LvglUiSetHwStatus(g_ui.ocxo_status, "OCXO --", lv_color_hex(0x64748B));
+  lv_obj_align(g_ui.ocxo_status,
+               LV_ALIGN_TOP_RIGHT,
+               -(16 + (3 * UI_HW_TAG_WIDTH) + (4 * UI_HW_TAG_GAP) + UI_CAL_TAG_WIDTH),
+               10);
+
   g_ui.range_line = lv_label_create(g_ui.detect_page);
   lv_label_set_text_fmt(g_ui.range_line,
                         "Scan: %lu.%03lu-%lu.%03lu MHz  Step:%luk",
@@ -229,7 +291,7 @@ void App_LvglUiInit(void)
   lv_obj_set_style_text_font(g_ui.scan_status, &lv_font_montserrat_14, 0);
 #endif
   App_LvglUiSetStatus(APP_UI_STATUS_IDLE);
-  lv_obj_align(g_ui.scan_status, LV_ALIGN_TOP_LEFT, 20, 230);
+  lv_obj_align(g_ui.scan_status, LV_ALIGN_TOP_LEFT, 350, 228);
 
   label = lv_label_create(main_card);
   lv_label_set_text(label, "Actions");
@@ -238,23 +300,27 @@ void App_LvglUiInit(void)
 
   g_ui.calibrate_btn = App_LvglUiCreateModeButton(main_card, "CALIBRATE", UI_ACTION_X, 70, MODDETECT_RUN_CALIBRATION);
   g_ui.task_btn = App_LvglUiCreateModeButton(main_card, "START TASK", UI_ACTION_X, 158, MODDETECT_RUN_TASK);
+  g_ui.ocxo_btn = App_LvglUiCreateModeButton(main_card, "OCXO CAL", UI_ACTION_X, 246, MODDETECT_RUN_OCXO_CAL);
 
   label = lv_label_create(main_card);
   lv_label_set_text(label, "Readiness");
   lv_obj_set_style_text_color(label, lv_color_hex(0xEAF2FF), 0);
-  lv_obj_align(label, LV_ALIGN_TOP_LEFT, UI_ACTION_X, 250);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, 20, 268);
 
   g_ui.overall_status = lv_label_create(main_card);
-  lv_obj_set_size(g_ui.overall_status, UI_MODE_BUTTON_WIDTH, 48);
+  lv_obj_set_size(g_ui.overall_status, 180, 40);
   lv_label_set_long_mode(g_ui.overall_status, LV_LABEL_LONG_MODE_CLIP);
   lv_obj_set_style_radius(g_ui.overall_status, 8, 0);
   lv_obj_set_style_bg_opa(g_ui.overall_status, LV_OPA_COVER, 0);
   lv_obj_set_style_text_color(g_ui.overall_status, lv_color_hex(0xFFFFFF), 0);
   lv_obj_set_style_text_align(g_ui.overall_status, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_text_font(g_ui.overall_status, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_pad_top(g_ui.overall_status, 12, 0);
+  lv_obj_set_style_pad_top(g_ui.overall_status, 9, 0);
   App_LvglUiSetHwStatus(g_ui.overall_status, "NEED CAL", lv_color_hex(0xCA8A04));
-  lv_obj_align(g_ui.overall_status, LV_ALIGN_TOP_LEFT, UI_ACTION_X, 286);
+  lv_obj_align(g_ui.overall_status, LV_ALIGN_TOP_LEFT, 20, 300);
+
+  g_ui.auto_task_btn = App_LvglUiCreateOcxoButton(main_card, "AUTO ON", 214, 303, 124, APP_UI_AUTO_TASK_TOGGLE);
+  g_ui.auto_task_label = lv_obj_get_child(g_ui.auto_task_btn, 0);
 
   g_ui.mod_value = lv_label_create(main_card);
   lv_label_set_text(g_ui.mod_value, "Mode: --");
@@ -267,6 +333,18 @@ void App_LvglUiInit(void)
   lv_obj_set_style_text_color(g_ui.demod_value, lv_color_hex(0xBFD3EF), 0);
   lv_obj_set_style_text_font(g_ui.demod_value, &lv_font_montserrat_14, 0);
   lv_obj_align(g_ui.demod_value, LV_ALIGN_TOP_LEFT, 20, 164);
+
+  g_ui.ocxo_value = lv_label_create(main_card);
+  lv_label_set_text(g_ui.ocxo_value, "OCXO: 1400 mV  Step: 10 mV");
+  lv_obj_set_style_text_color(g_ui.ocxo_value, lv_color_hex(0xBFD3EF), 0);
+  lv_obj_set_style_text_font(g_ui.ocxo_value, &lv_font_montserrat_14, 0);
+  lv_obj_align(g_ui.ocxo_value, LV_ALIGN_TOP_LEFT, 20, 202);
+
+  g_ui.ocxo_step_btn = App_LvglUiCreateOcxoButton(main_card, "STEP", 20, 228, 88, APP_UI_OCXO_STEP);
+  g_ui.ocxo_dec_btn = App_LvglUiCreateOcxoButton(main_card, "-", 118, 228, 56, APP_UI_OCXO_DEC);
+  g_ui.ocxo_inc_btn = App_LvglUiCreateOcxoButton(main_card, "+", 184, 228, 56, APP_UI_OCXO_INC);
+  g_ui.ocxo_save_btn = App_LvglUiCreateOcxoButton(main_card, "SAVE", 250, 228, 88, APP_UI_OCXO_SAVE);
+  App_LvglUiSetOcxoControlsVisible(0U);
 
   g_ui.quality_line = lv_label_create(g_ui.detect_page);
   lv_label_set_text(g_ui.quality_line, "Blocks: 0  Drops: 0");
@@ -281,9 +359,8 @@ void App_LvglUiRefresh(void)
   moddetect_task_stats_t st;
   demod_task_stats_t demod_st;
   analyze_result_t analyze_result;
+  app_ocxo_cal_status_t ocxo_status;
   uint32_t now_tick = osKernelGetTickCount();
-  char freq_buf[32];
-  char param_buf[64];
 
   if ((uint32_t)(now_tick - g_ui.last_refresh_tick) < UI_REFRESH_PERIOD_MS)
   {
@@ -294,65 +371,14 @@ void App_LvglUiRefresh(void)
   moddetect_task_get_stats(&st);
   demod_task_get_stats(&demod_st);
   analyze_get_result(&analyze_result);
+  app_ocxo_cal_get_status(&ocxo_status);
   App_LvglUiRefreshHwStatus(&st);
   App_LvglUiRefreshOverallStatus(&st, &demod_st);
-
-  if ((st.result_ready != 0U) && (st.center_hz != 0UL))
-  {
-    App_LvglUiFormatFreq(freq_buf, sizeof(freq_buf), st.center_hz);
-  }
-  else
-  {
-    snprintf(freq_buf, sizeof(freq_buf), "--.--- MHz");
-  }
-
-  if (demod_st.state == DEMOD_STATE_RUNNING)
-  {
-    App_LvglUiSetStatus(APP_UI_STATUS_DEMOD);
-  }
-  else if (st.run_mode == MODDETECT_RUN_IDLE)
-  {
-    App_LvglUiSetStatus(APP_UI_STATUS_IDLE);
-  }
-  else if (st.run_mode == MODDETECT_RUN_CALIBRATION)
-  {
-    App_LvglUiSetStatus((st.cal_done != 0U) ? APP_UI_STATUS_CAL_DONE : APP_UI_STATUS_CALIBRATING);
-  }
-  else if ((st.result_ready != 0U) && (st.center_hz == 0UL))
-  {
-    App_LvglUiSetStatus(APP_UI_STATUS_UNLOCKED);
-  }
-  else if ((analyze_is_done() != 0U) && (st.result_ready != 0U) && (st.center_hz != 0UL))
-  {
-    App_LvglUiSetStatus(APP_UI_STATUS_DONE);
-  }
-  else if (analyze_is_active() != 0U)
-  {
-    App_LvglUiSetStatus(APP_UI_STATUS_ANALYZING);
-  }
-  else
-  {
-    App_LvglUiSetStatus(APP_UI_STATUS_SWEEP);
-  }
-
-  lv_label_set_text(g_ui.freq_value, freq_buf);
-  if ((analyze_result.done != 0U) && (st.result_ready != 0U) && (st.center_hz != 0UL))
-  {
-    lv_label_set_text_fmt(g_ui.mod_value, "Mode: %s", App_LvglUiAnalyzeModeText(analyze_result.mode));
-    App_LvglUiFormatAnalyzeParam(param_buf, sizeof(param_buf), &analyze_result);
-    lv_label_set_text(g_ui.demod_value, param_buf);
-  }
-  else
-  {
-    lv_label_set_text(g_ui.mod_value, "Mode: --");
-    lv_label_set_text(g_ui.demod_value, "Param: --");
-  }
-
-  lv_label_set_text_fmt(g_ui.quality_line,
-                        "Blocks:%lu  Drops:%lu  Seq:%lu",
-                        (unsigned long)st.process_cnt,
-                        (unsigned long)st.submit_drop_cnt,
-                        (unsigned long)st.last_sequence);
+  App_LvglUiRefreshAutoTaskButton(&ocxo_status);
+  App_LvglUiRefreshOcxoControls(&st, &ocxo_status);
+  App_LvglUiSetStatus(App_LvglUiResolveRunStatus(&st, &demod_st));
+  App_LvglUiRefreshResult(&st, &analyze_result);
+  App_LvglUiRefreshQuality(&st);
 }
 
 static void App_LvglUiSetStatus(app_ui_status_t status)
@@ -397,6 +423,11 @@ static void App_LvglUiSetStatus(app_ui_status_t status)
       bg = lv_color_hex(0xFACC15);
       break;
 
+    case APP_UI_STATUS_OCXO_CAL:
+      text = "OCXO CAL";
+      bg = lv_color_hex(0xFACC15);
+      break;
+
     case APP_UI_STATUS_SWEEP:
       text = "SCANNING";
       bg = lv_color_hex(0xFACC15);
@@ -422,13 +453,203 @@ static void App_LvglUiSetHwStatus(lv_obj_t *status_label, const char *text, lv_c
   lv_obj_set_style_bg_color(status_label, bg, 0);
 }
 
+static void App_LvglUiSetCalBorder(uint8_t active)
+{
+  if (g_ui.cal_status == NULL)
+  {
+    return;
+  }
+
+  lv_obj_set_style_border_width(g_ui.cal_status, active ? 3 : 0, 0);
+  lv_obj_set_style_border_color(g_ui.cal_status, lv_color_hex(0xFFFFFF), 0);
+}
+
+static void App_LvglUiSetOneHidden(lv_obj_t *obj, uint8_t hidden)
+{
+  if (obj == NULL)
+  {
+    return;
+  }
+
+  if (hidden != 0U)
+  {
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  }
+  else
+  {
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+/* 非 OCXO 校准模式隐藏电压调节控件，避免误触改变 PA4 控制电压。 */
+static void App_LvglUiSetOcxoControlsVisible(uint8_t visible)
+{
+  uint8_t hidden = (visible == 0U) ? 1U : 0U;
+
+  App_LvglUiSetOneHidden(g_ui.ocxo_value, hidden);
+  App_LvglUiSetOneHidden(g_ui.ocxo_step_btn, hidden);
+  App_LvglUiSetOneHidden(g_ui.ocxo_dec_btn, hidden);
+  App_LvglUiSetOneHidden(g_ui.ocxo_inc_btn, hidden);
+  App_LvglUiSetOneHidden(g_ui.ocxo_save_btn, hidden);
+}
+
+/* 把任务状态压缩成主状态标签，避免刷新函数里散落多段优先级判断。 */
+static app_ui_status_t App_LvglUiResolveRunStatus(const moddetect_task_stats_t *stats, const demod_task_stats_t *demod_stats)
+{
+  if ((demod_stats != NULL) && (demod_stats->state == DEMOD_STATE_RUNNING))
+  {
+    return APP_UI_STATUS_DEMOD;
+  }
+
+  if ((stats == NULL) || (stats->run_mode == MODDETECT_RUN_IDLE))
+  {
+    return APP_UI_STATUS_IDLE;
+  }
+
+  if (stats->run_mode == MODDETECT_RUN_CALIBRATION)
+  {
+    return (stats->cal_done != 0U) ? APP_UI_STATUS_CAL_DONE : APP_UI_STATUS_CALIBRATING;
+  }
+
+  if (stats->run_mode == MODDETECT_RUN_OCXO_CAL)
+  {
+    return APP_UI_STATUS_OCXO_CAL;
+  }
+
+  if ((stats->result_ready != 0U) && (stats->center_hz == 0UL))
+  {
+    return APP_UI_STATUS_UNLOCKED;
+  }
+
+  if ((analyze_is_done() != 0U) && (stats->result_ready != 0U) && (stats->center_hz != 0UL))
+  {
+    return APP_UI_STATUS_DONE;
+  }
+
+  if (analyze_is_active() != 0U)
+  {
+    return APP_UI_STATUS_ANALYZING;
+  }
+
+  return APP_UI_STATUS_SWEEP;
+}
+
+static uint8_t App_LvglUiShouldShowOcxoControls(const moddetect_task_stats_t *stats)
+{
+  return ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_OCXO_CAL)) ? 1U : 0U;
+}
+
+static void App_LvglUiRefreshAutoTaskButton(const app_ocxo_cal_status_t *ocxo_status)
+{
+  if ((g_ui.auto_task_btn == NULL) || (g_ui.auto_task_label == NULL) || (ocxo_status == NULL))
+  {
+    return;
+  }
+
+  if (ocxo_status->auto_task_enable != 0U)
+  {
+    lv_label_set_text(g_ui.auto_task_label, "AUTO ON");
+    lv_obj_set_style_bg_color(g_ui.auto_task_btn, lv_color_hex(0x16A34A), 0);
+  }
+  else
+  {
+    lv_label_set_text(g_ui.auto_task_label, "AUTO OFF");
+    lv_obj_set_style_bg_color(g_ui.auto_task_btn, lv_color_hex(0x64748B), 0);
+  }
+}
+
+static void App_LvglUiRefreshOcxoControls(const moddetect_task_stats_t *stats, const app_ocxo_cal_status_t *ocxo_status)
+{
+  uint8_t show_controls = App_LvglUiShouldShowOcxoControls(stats);
+
+  App_LvglUiSetOcxoControlsVisible(show_controls);
+
+  if (g_ui.ocxo_btn != NULL)
+  {
+    lv_obj_t *ocxo_btn_label = lv_obj_get_child(g_ui.ocxo_btn, 0);
+
+    if (ocxo_btn_label != NULL)
+    {
+      lv_label_set_text(ocxo_btn_label, (show_controls != 0U) ? "ESC" : "OCXO CAL");
+    }
+  }
+
+  if ((g_ui.ocxo_value != NULL) && (ocxo_status != NULL))
+  {
+    lv_label_set_text_fmt(g_ui.ocxo_value,
+                          "OCXO: %lu mV  Step: %lu mV",
+                          (unsigned long)ocxo_status->dac_mv,
+                          (unsigned long)ocxo_status->step_mv);
+  }
+}
+
+static void App_LvglUiRefreshResult(const moddetect_task_stats_t *stats, const analyze_result_t *result)
+{
+  char freq_buf[32];
+  char param_buf[96];
+
+  if ((stats != NULL) && (stats->result_ready != 0U) && (stats->center_hz != 0UL))
+  {
+    App_LvglUiFormatFreq(freq_buf, sizeof(freq_buf), stats->center_hz);
+  }
+  else
+  {
+    snprintf(freq_buf, sizeof(freq_buf), "--.--- MHz");
+  }
+
+  lv_label_set_text(g_ui.freq_value, freq_buf);
+  if ((result != NULL) &&
+      (result->done != 0U) &&
+      (stats != NULL) &&
+      (stats->result_ready != 0U) &&
+      (stats->center_hz != 0UL))
+  {
+    lv_label_set_text_fmt(g_ui.mod_value, "Mode: %s", App_LvglUiAnalyzeModeText(result->mode));
+    App_LvglUiFormatAnalyzeParam(param_buf, sizeof(param_buf), result);
+    lv_label_set_text(g_ui.demod_value, param_buf);
+  }
+  else
+  {
+    lv_label_set_text(g_ui.mod_value, "Mode: --");
+    lv_label_set_text(g_ui.demod_value, "Param: --");
+  }
+}
+
+static void App_LvglUiRefreshQuality(const moddetect_task_stats_t *stats)
+{
+  if ((g_ui.quality_line == NULL) || (stats == NULL))
+  {
+    return;
+  }
+
+  lv_label_set_text_fmt(g_ui.quality_line,
+                        "Blocks:%lu  Drops:%lu  Seq:%lu",
+                        (unsigned long)stats->process_cnt,
+                        (unsigned long)stats->submit_drop_cnt,
+                        (unsigned long)stats->last_sequence);
+}
+
 /* 刷新右上角状态：硬件状态来自驱动状态，校准状态来自 ModDetectTask 的历史结果。 */
 static void App_LvglUiRefreshHwStatus(const moddetect_task_stats_t *stats)
 {
   const AppDdsStatus *dds_status = AppDDS_GetStatus();
+  app_ocxo_cal_status_t ocxo_status;
+  uint32_t now_tick = osKernelGetTickCount();
+  uint8_t cal_border_on = 0U;
+
+  app_ocxo_cal_get_status(&ocxo_status);
 
   if (stats != NULL)
   {
+    if (stats->cal_state != g_ui.last_cal_state)
+    {
+      g_ui.last_cal_state = stats->cal_state;
+      if (stats->cal_state == MODDETECT_CAL_SAVE_OK)
+      {
+        g_ui.cal_save_ok_tick = now_tick;
+      }
+    }
+
     if (stats->cal_state == MODDETECT_CAL_RUNNING)
     {
       App_LvglUiSetHwStatus(g_ui.cal_status, "CAL RUN", lv_color_hex(0xCA8A04));
@@ -436,6 +657,19 @@ static void App_LvglUiRefreshHwStatus(const moddetect_task_stats_t *stats)
     else if (stats->cal_state == MODDETECT_CAL_SAVING)
     {
       App_LvglUiSetHwStatus(g_ui.cal_status, "CAL SAVE", lv_color_hex(0x2563EB));
+    }
+    else if (stats->cal_state == MODDETECT_CAL_SAVE_OK)
+    {
+      if ((uint32_t)(now_tick - g_ui.cal_save_ok_tick) < UI_CAL_SAVE_OK_BLINK_MS)
+      {
+        uint32_t phase = ((uint32_t)(now_tick - g_ui.cal_save_ok_tick) / UI_CAL_SAVE_OK_BLINK_PERIOD_MS) & 1UL;
+        App_LvglUiSetHwStatus(g_ui.cal_status, "CAL SAVE OK", lv_color_hex(0x16A34A));
+        cal_border_on = (phase == 0UL) ? 1U : 0U;
+      }
+      else
+      {
+        App_LvglUiSetHwStatus(g_ui.cal_status, "CAL RAM", lv_color_hex(0x16A34A));
+      }
     }
     else if (stats->cal_state == MODDETECT_CAL_HISTORY)
     {
@@ -453,6 +687,36 @@ static void App_LvglUiRefreshHwStatus(const moddetect_task_stats_t *stats)
     {
       App_LvglUiSetHwStatus(g_ui.cal_status, "CAL --", lv_color_hex(0x64748B));
     }
+  }
+  App_LvglUiSetCalBorder(cal_border_on);
+
+  if (ocxo_status.state == APP_OCXO_CAL_RUNNING)
+  {
+    App_LvglUiSetHwStatus(g_ui.ocxo_status, "OCXO RUN", lv_color_hex(0xCA8A04));
+  }
+  else if (ocxo_status.state == APP_OCXO_CAL_CURRENT)
+  {
+    App_LvglUiSetHwStatus(g_ui.ocxo_status, "OCXO RAM", lv_color_hex(0x16A34A));
+  }
+  else if (ocxo_status.state == APP_OCXO_CAL_SAVING)
+  {
+    App_LvglUiSetHwStatus(g_ui.ocxo_status, "OCXO SAVE", lv_color_hex(0x2563EB));
+  }
+  else if (ocxo_status.state == APP_OCXO_CAL_SAVE_OK)
+  {
+    App_LvglUiSetHwStatus(g_ui.ocxo_status, "OCXO OK", lv_color_hex(0x16A34A));
+  }
+  else if (ocxo_status.state == APP_OCXO_CAL_HISTORY)
+  {
+    App_LvglUiSetHwStatus(g_ui.ocxo_status, "OCXO OLD", lv_color_hex(0x16A34A));
+  }
+  else if (ocxo_status.state == APP_OCXO_CAL_ERROR)
+  {
+    App_LvglUiSetHwStatus(g_ui.ocxo_status, "OCXO ERR", lv_color_hex(0xDC2626));
+  }
+  else
+  {
+    App_LvglUiSetHwStatus(g_ui.ocxo_status, "OCXO --", lv_color_hex(0x64748B));
   }
 
   if ((stats != NULL) && (stats->adc_ref_ok != 0U))
@@ -507,6 +771,10 @@ static void App_LvglUiRefreshOverallStatus(const moddetect_task_stats_t *stats, 
   else if ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_CALIBRATION) && (stats->cal_done == 0U))
   {
     App_LvglUiSetHwStatus(g_ui.overall_status, "CAL RUN", lv_color_hex(0xCA8A04));
+  }
+  else if ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_OCXO_CAL))
+  {
+    App_LvglUiSetHwStatus(g_ui.overall_status, "OCXO CAL", lv_color_hex(0xCA8A04));
   }
   else if (((stats != NULL) && (stats->run_mode == MODDETECT_RUN_TASK) && (stats->result_ready == 0U)) ||
            (analyze_is_active() != 0U))
@@ -626,13 +894,113 @@ static lv_obj_t *App_LvglUiCreateModeButton(lv_obj_t *parent,
   return btn;
 }
 
+/* 创建 OCXO 电压校准按钮；按钮只在 OCXO 校准模式下执行调节和保存。 */
+static lv_obj_t *App_LvglUiCreateOcxoButton(lv_obj_t *parent,
+                                            const char *text,
+                                            lv_coord_t x,
+                                            lv_coord_t y,
+                                            lv_coord_t w,
+                                            app_ui_ocxo_action_t action)
+{
+  lv_obj_t *btn = lv_button_create(parent);
+  lv_obj_t *label;
+
+  lv_obj_set_pos(btn, x, y);
+  lv_obj_set_size(btn, w, 34);
+  lv_obj_set_style_radius(btn, 8, 0);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(0x334155), 0);
+  lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_shadow_width(btn, 0, 0);
+  lv_obj_add_event_cb(btn, App_LvglUiOcxoButtonEventCb, LV_EVENT_CLICKED, (void *)(uintptr_t)action);
+
+  label = lv_label_create(btn);
+  lv_label_set_text(label, text);
+  lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), 0);
+  lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+  lv_obj_center(label);
+
+  return btn;
+}
+
+/* UI 命令入口：事件回调只提交命令，具体状态变更集中在这里维护。 */
+static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
+{
+  if (command == APP_UI_CMD_MODE)
+  {
+    moddetect_run_mode_t mode = (moddetect_run_mode_t)value;
+
+    if ((mode == MODDETECT_RUN_OCXO_CAL) && (moddetect_task_get_mode() == MODDETECT_RUN_OCXO_CAL))
+    {
+      app_ocxo_cal_leave();
+      moddetect_task_request_mode(MODDETECT_RUN_IDLE);
+      return;
+    }
+
+    moddetect_task_request_mode(mode);
+    return;
+  }
+
+  if (command == APP_UI_CMD_OCXO_ACTION)
+  {
+    app_ui_ocxo_action_t action = (app_ui_ocxo_action_t)value;
+    app_ocxo_cal_status_t status;
+
+    if (action == APP_UI_AUTO_TASK_TOGGLE)
+    {
+      uint8_t next_enable = (app_ocxo_cal_get_auto_task_enable() == 0U) ? 1U : 0U;
+      (void)app_ocxo_cal_set_auto_task_enable(next_enable);
+      return;
+    }
+
+    if (moddetect_task_get_mode() != MODDETECT_RUN_OCXO_CAL)
+    {
+      return;
+    }
+
+    app_ocxo_cal_get_status(&status);
+    switch (action)
+    {
+      case APP_UI_OCXO_STEP:
+        app_ocxo_cal_cycle_step();
+        break;
+
+      case APP_UI_OCXO_DEC:
+        app_ocxo_cal_adjust(-(int32_t)status.step_mv);
+        break;
+
+      case APP_UI_OCXO_INC:
+        app_ocxo_cal_adjust((int32_t)status.step_mv);
+        break;
+
+      case APP_UI_OCXO_SAVE:
+        (void)app_ocxo_cal_save_to_flash();
+        moddetect_task_request_mode(MODDETECT_RUN_IDLE);
+        break;
+
+      default:
+        break;
+    }
+  }
+}
+
 /* 处理模式按钮点击，将用户选择转交给 ModDetectTask。 */
 static void App_LvglUiModeButtonEventCb(lv_event_t *event)
 {
   if (lv_event_get_code(event) == LV_EVENT_CLICKED)
   {
-    moddetect_task_request_mode((moddetect_run_mode_t)(uintptr_t)lv_event_get_user_data(event));
+    App_LvglUiDispatchCommand(APP_UI_CMD_MODE, (uintptr_t)lv_event_get_user_data(event));
   }
+}
+
+/* 处理 OCXO 电压调节按钮。 */
+static void App_LvglUiOcxoButtonEventCb(lv_event_t *event)
+{
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+  {
+    return;
+  }
+
+  App_LvglUiDispatchCommand(APP_UI_CMD_OCXO_ACTION, (uintptr_t)lv_event_get_user_data(event));
 }
 
 static void App_LvglUiFormatFreq(char *out, uint32_t out_len, uint32_t hz)
@@ -688,31 +1056,82 @@ static void App_LvglUiFormatAnalyzeParam(char *out, uint32_t out_len, const anal
   switch (result->mode)
   {
     case ANALYZE_MODE_AM:
+    {
+      uint32_t depth_pm = ((result->param_valid_mask & ANALYZE_PARAM_AM_DEPTH_VALID) != 0U) ?
+                          result->am_depth_pm : result->depth_pm;
       snprintf(out,
                out_len,
                "Param: fm=%lu.%03lu kHz  depth=%lu.%lu%%",
                (unsigned long)(result->mod_hz / 1000UL),
                (unsigned long)(result->mod_hz % 1000UL),
-               (unsigned long)(result->depth_pm / 100U),
-               (unsigned long)((result->depth_pm % 100U) / 10U));
+               (unsigned long)(depth_pm / 10U),
+               (unsigned long)(depth_pm % 10U));
       break;
+    }
 
     case ANALYZE_MODE_ASK:
+    {
+      uint32_t depth_pm = ((result->param_valid_mask & ANALYZE_PARAM_ASK_DEPTH_VALID) != 0U) ?
+                          result->ask_depth_pm : result->depth_pm;
+      uint32_t rate_hz = ((result->param_valid_mask & ANALYZE_PARAM_SYMBOL_RATE_VALID) != 0U) ?
+                         result->symbol_rate_hz : result->mod_hz;
       snprintf(out,
                out_len,
                "Param: rate~%lu.%03lu kHz  depth=%lu.%lu%%",
-               (unsigned long)(result->mod_hz / 1000UL),
-               (unsigned long)(result->mod_hz % 1000UL),
-               (unsigned long)(result->depth_pm / 100U),
-               (unsigned long)((result->depth_pm % 100U) / 10U));
+               (unsigned long)(rate_hz / 1000UL),
+               (unsigned long)(rate_hz % 1000UL),
+               (unsigned long)(depth_pm / 10U),
+               (unsigned long)(depth_pm % 10U));
       break;
+    }
 
     case ANALYZE_MODE_FM:
-      App_LvglUiFormatKhz(out, out_len, "Param: fm=", result->mod_hz);
+      if ((result->param_valid_mask & ANALYZE_PARAM_FM_DEVIATION_VALID) != 0U)
+      {
+        snprintf(out,
+                 out_len,
+                 "Param: fm=%lu.%03lu kHz  dev=%lu.%03lu kHz",
+                 (unsigned long)(result->mod_hz / 1000UL),
+                 (unsigned long)(result->mod_hz % 1000UL),
+                 (unsigned long)(result->fm_deviation_hz / 1000UL),
+                 (unsigned long)(result->fm_deviation_hz % 1000UL));
+      }
+      else
+      {
+        App_LvglUiFormatKhz(out, out_len, "Param: fm=", result->mod_hz);
+      }
       break;
 
     case ANALYZE_MODE_FSK:
-      App_LvglUiFormatKhz(out, out_len, "Param: df~", result->mod_hz);
+    {
+      uint32_t sep_hz = ((result->param_valid_mask & ANALYZE_PARAM_FSK_SEPARATION_VALID) != 0U) ?
+                        result->fsk_separation_hz : result->mod_hz;
+      if ((result->param_valid_mask & ANALYZE_PARAM_SYMBOL_RATE_VALID) != 0U)
+      {
+        snprintf(out,
+                 out_len,
+                 "Param: rate~%lu.%03lu kHz  df~%lu.%03lu kHz",
+                 (unsigned long)(result->symbol_rate_hz / 1000UL),
+                 (unsigned long)(result->symbol_rate_hz % 1000UL),
+                 (unsigned long)(sep_hz / 1000UL),
+                 (unsigned long)(sep_hz % 1000UL));
+      }
+      else
+      {
+        App_LvglUiFormatKhz(out, out_len, "Param: df~", sep_hz);
+      }
+      break;
+    }
+
+    case ANALYZE_MODE_PSK:
+      if ((result->param_valid_mask & ANALYZE_PARAM_SYMBOL_RATE_VALID) != 0U)
+      {
+        App_LvglUiFormatKhz(out, out_len, "Param: rate~", result->symbol_rate_hz);
+      }
+      else
+      {
+        snprintf(out, out_len, "Param: rate --");
+      }
       break;
 
     case ANALYZE_MODE_MIXED:
@@ -720,7 +1139,6 @@ static void App_LvglUiFormatAnalyzeParam(char *out, uint32_t out_len, const anal
       break;
 
     case ANALYZE_MODE_CW:
-    case ANALYZE_MODE_PSK:
     case ANALYZE_MODE_UNKNOWN:
     default:
       snprintf(out, out_len, "Param: --");

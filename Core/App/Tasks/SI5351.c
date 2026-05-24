@@ -11,13 +11,10 @@
 #define APP_SI5351_STARTUP_RETRY_MS  200U
 #define APP_SI5351_MONITOR_PERIOD_MS 1000U
 #define APP_SI5351_LOCK_TIMEOUT_MS   100U
-#define APP_SI5351_MONITOR_FAIL_LIMIT 5U /* ready 后连续失败多少次才判定时钟失效；调大可抗 I2C/PLL 瞬态抖动，调小掉线响应更快。 */
+#define APP_SI5351_MONITOR_FAIL_LIMIT 5U /* ready 后连续多少次状态异常才处理；I2C 读失败只告警，不直接关闭已配置输出。 */
 #define SI5351_LOG_ENBLE 1 /* 是否启用 SI5351 相关日志输出 */
 
 /* 默认输出计划集中放在任务层，后续切版本或切板级频点时只改这里即可。 */
-#undef APP_SI5351_MONITOR_FAIL_LIMIT
-#define APP_SI5351_MONITOR_FAIL_LIMIT 3U /* ready 后连续多少次状态异常才处理；I2C 读失败只告警，不直接关闭已配置输出。 */
-
 static const app_si5351_output_cfg_t g_app_si5351_default_plan[] = {
     {2U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
 #if APP_SI5351_SELECTED_VARIANT == APP_SI5351_VARIANT_BASIC
@@ -134,7 +131,7 @@ void StartSI5351(void *argument)
             continue;
         }
 
-        /* ready 后继续轮询参考状态；一旦丢 CLKIN 或 PLL 失锁，立即关输出并重新走启动流程。 */
+        /* ready 后继续轮询参考状态；连续异常达到门限后才关输出并重新走启动流程。 */
         result = app_si5351_check_ref_status();
         if (result != APP_SI5351_RESULT_OK)
         {

@@ -5,7 +5,6 @@
 #include <string.h>
 #include <sys/_intsup.h>
 #include <stdbool.h>
-#include "dac.h"
 
 #include "cmsis_os2.h"
 #include "FreeRTOS.h"
@@ -16,9 +15,9 @@
 #include "Analyze.h"
 #include "app_dds_ctrl.h"
 #include "DemodTask.h"
+#include "app_ocxo_cal.h"
+#include "SI5351.h"
 
-#define DAC_MAX_CODE 4095U
-#define DAC_VREF_MV  3300U
 #define ENTER_LOG_ENABLE 0 /* 进入算法调度日志通道开关 */
 #define SWEEP_RUSULT_LOG_ENABLE 1 /* 扫频结果日志通道开关 */
 #define MODDETECT_ANALYZE_LOG_FLUSH_LINES 2U /* 每个 ADC 调度周期最多发送的分析日志行数，避免打印队列被频谱日志打满。 */
@@ -32,6 +31,8 @@
 #define MODDETECT_DDS_REINIT_ON_START_ENABLE 1U /* 每次点击校准或任务前重新初始化 AD9959，降低 DDS 长时间运行后状态漂移的影响。 */
 
 #define MODDETECT_ADC_REF_CLOCK_TIMEOUT_MS 1000U /* ADC 数据块超过该时间未更新，就认为 ADC 参考时钟或采样链路异常。 */
+#define MODDETECT_AUTO_TASK_AFTER_SELF_TEST_ENABLE 1U /* 上电自检通过后自动进入任务；关闭后仍保持等待按钮启动。 */
+#define MODDETECT_SELF_TEST_STABLE_BLOCKS 3U /* 自检通过需要连续满足的 ADC 数据块数，数值越大越不容易被瞬态状态误触发。 */
 
 static bool sweep_rest =0;
 static bool analyze_rest = 0U;
@@ -39,6 +40,9 @@ static bool analyze_rest = 0U;
 static bool demod_triggered = 0U;
 #endif
 static bool low_if_corrected = 0U;
+static uint8_t g_auto_task_requested = 0U;
+static uint8_t g_boot_auto_task_enable = 0U;
+static uint8_t g_self_test_ok_blocks = 0U;
 static moddetect_run_mode_t g_run_mode = MODDETECT_RUN_IDLE;
 static moddetect_run_mode_t g_requested_mode = MODDETECT_RUN_IDLE;
 
@@ -57,6 +61,9 @@ static void moddetect_apply_mode_request(void);
 static uint8_t moddetect_is_busy_for_new_request(void);
 static void moddetect_update_cal_stats(void);
 static void moddetect_request_dds_reinit(void);
+static void moddetect_request_ocxo_dds_output(void);
+static uint8_t moddetect_self_test_is_ready(void);
+static void moddetect_auto_start_task_if_ready(void);
 static uint8_t moddetect_try_low_if_correction(void);
 
 /* 将 ADC 数据块发布到 ModDetectTask 以供处理；如果上一个块仍在处理中，则增加丢弃计数。 */
@@ -79,16 +86,6 @@ void sweep_task_publish_block(const uint16_t *i_buf, const uint16_t *q_buf, uint
     g_sweep_task_stats.adc_last_tick = osKernelGetTickCount();
     g_sweep_task_stats.adc_ref_ok = 1U;
     __set_PRIMASK(primask);
-}
-
-static uint32_t dac_mv_to_code(uint32_t mv)
-{
-    if (mv >= DAC_VREF_MV)
-    {
-        return DAC_MAX_CODE;
-    }
-
-    return (mv * DAC_MAX_CODE + (DAC_VREF_MV / 2U)) / DAC_VREF_MV;
 }
 
 static int32_t moddetect_abs_i32(int32_t value)
@@ -136,11 +133,86 @@ static void moddetect_request_dds_reinit(void)
 #endif
 }
 
+/* 进入恒温晶振校准时，让 AD9959 CH0 输出固定 125MHz 参考信号。 */
+static void moddetect_request_ocxo_dds_output(void)
+{
+    AppDdsCmd cmd;
+
+    cmd = AppDDS_MakeSelectChCmd(APP_OCXO_CAL_DDS_CH);
+    (void)AppDDS_DispatchCmd(&cmd);
+    cmd = AppDDS_MakeSetFreqCmd(APP_OCXO_CAL_DDS_FREQ_HZ);
+    (void)AppDDS_DispatchCmd(&cmd);
+    cmd = AppDDS_MakeSetAmpCmd(APP_OCXO_CAL_DDS_AMP_CODE);
+    (void)AppDDS_DispatchCmd(&cmd);
+    cmd = AppDDS_MakeApplyCmd();
+    (void)AppDDS_DispatchCmd(&cmd);
+}
+
 static void moddetect_set_final_lo(uint32_t center_hz)
 {
     AppDdsCmd cmd = AppDDS_MakeSetChFreqApplyCmd(0U, center_hz + APP_SWEEP_FINAL_LO_OFFSET_HZ);
 
     (void)AppDDS_DispatchCmd(&cmd);
+}
+
+/* 上电自检只检查任务启动所需的硬件链路：时钟、DDS 和 ADC 数据心跳。 */
+static uint8_t moddetect_self_test_is_ready(void)
+{
+    const AppDdsStatus *dds_status = AppDDS_GetStatus();
+
+    if (app_si5351_is_clock_ready() == false)
+    {
+        return 0U;
+    }
+
+    if ((dds_status == NULL) || (dds_status->hw_ready == 0U) || (dds_status->last_err != 0))
+    {
+        return 0U;
+    }
+
+    if (g_sweep_task_stats.adc_ref_ok == 0U)
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+/* 空闲时自检连续通过后自动进入任务，仍保留 UI 按钮的手动重新开始能力。 */
+static void moddetect_auto_start_task_if_ready(void)
+{
+#if (MODDETECT_AUTO_TASK_AFTER_SELF_TEST_ENABLE != 0U)
+    if ((g_auto_task_requested != 0U) || (g_run_mode != MODDETECT_RUN_IDLE))
+    {
+        return;
+    }
+
+    if (g_boot_auto_task_enable == 0U)
+    {
+        g_self_test_ok_blocks = 0U;
+        return;
+    }
+
+    if (moddetect_self_test_is_ready() == 0U)
+    {
+        g_self_test_ok_blocks = 0U;
+        return;
+    }
+
+    if (g_self_test_ok_blocks < MODDETECT_SELF_TEST_STABLE_BLOCKS)
+    {
+        g_self_test_ok_blocks++;
+    }
+
+    if (g_self_test_ok_blocks < MODDETECT_SELF_TEST_STABLE_BLOCKS)
+    {
+        return;
+    }
+
+    g_auto_task_requested = 1U;
+    moddetect_task_request_mode(MODDETECT_RUN_TASK);
+    print_queue_send("moddetect: selftest ok, auto task\r\n");
+#endif
 }
 
 /* 分析后用残留低中频校验锁点；偏差过大时只修正一次中心并重跑分析。 */
@@ -242,7 +314,8 @@ void moddetect_task_request_mode(moddetect_run_mode_t mode)
 
     if ((mode != MODDETECT_RUN_IDLE) &&
         (mode != MODDETECT_RUN_CALIBRATION) &&
-        (mode != MODDETECT_RUN_TASK))
+        (mode != MODDETECT_RUN_TASK) &&
+        (mode != MODDETECT_RUN_OCXO_CAL))
     {
         return;
     }
@@ -255,6 +328,11 @@ void moddetect_task_request_mode(moddetect_run_mode_t mode)
     primask = __get_PRIMASK();
     __disable_irq();
     g_requested_mode = mode;
+    if (mode == MODDETECT_RUN_IDLE)
+    {
+        g_run_mode = MODDETECT_RUN_IDLE;
+        g_auto_task_requested = 1U;
+    }
     g_sweep_task_stats.run_mode = mode;
     g_sweep_task_stats.center_hz = 0UL;
     g_sweep_task_stats.result_ready = 0U;
@@ -321,6 +399,12 @@ static void moddetect_apply_mode_request(void)
     low_if_corrected = 0U;
     demod_task_stop();
 
+    if (requested == MODDETECT_RUN_OCXO_CAL)
+    {
+        app_ocxo_cal_enter();
+        moddetect_request_ocxo_dds_output();
+    }
+
     primask = __get_PRIMASK();
     __disable_irq();
     g_run_mode = requested;
@@ -363,9 +447,17 @@ void moddetect_task_get_stats(moddetect_task_stats_t *stats_out)
 void StartModDetectTask(void *argument)
 {
     (void)argument;
-    uint32_t dac_code = dac_mv_to_code(1400U);
-    HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
-    HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, dac_code);   
+
+    app_ocxo_cal_init();
+    if (app_ocxo_cal_load_from_flash() != 0U)
+    {
+        print_queue_send("ocxo:flash,load,1\r\n");
+    }
+    else
+    {
+        print_queue_send("ocxo:flash,load,0\r\n");
+    }
+    g_boot_auto_task_enable = app_ocxo_cal_get_auto_task_enable();
 
     if (app_sweep_load_calibration_from_flash() != 0U)
     {
@@ -426,12 +518,23 @@ void StartModDetectTask(void *argument)
 
         if (g_run_mode == MODDETECT_RUN_IDLE)
         {
+            moddetect_auto_start_task_if_ready();
+            continue;
+        }
+
+        if (g_run_mode == MODDETECT_RUN_OCXO_CAL)
+        {
             continue;
         }
 
         if (g_run_mode == MODDETECT_RUN_CALIBRATION)
         {
             uint8_t cal_done;
+
+            if (g_sweep_task_stats.cal_done != 0U)
+            {
+                continue;
+            }
 
             cal_done = app_sweep_calibrate_baseline(APP_SWEEP_DEFAULT_START_HZ,
                                                     APP_SWEEP_DEFAULT_STOP_HZ,
@@ -453,16 +556,20 @@ void StartModDetectTask(void *argument)
                 if (app_sweep_save_calibration_to_flash() != 0U)
                 {
                     print_queue_send("cal:flash,save,1\r\n");
+                    primask = __get_PRIMASK();
+                    __disable_irq();
+                    g_sweep_task_stats.cal_state = MODDETECT_CAL_SAVE_OK;
+                    __set_PRIMASK(primask);
                 }
                 else
                 {
                     print_queue_send("cal:flash,save,0\r\n");
+                    primask = __get_PRIMASK();
+                    __disable_irq();
+                    g_sweep_task_stats.cal_state =
+                        (g_sweep_task_stats.cal_valid != 0U) ? MODDETECT_CAL_CURRENT : MODDETECT_CAL_NONE;
+                    __set_PRIMASK(primask);
                 }
-                primask = __get_PRIMASK();
-                __disable_irq();
-                g_sweep_task_stats.cal_state =
-                    (g_sweep_task_stats.cal_valid != 0U) ? MODDETECT_CAL_CURRENT : MODDETECT_CAL_NONE;
-                __set_PRIMASK(primask);
             }
             continue;
         }

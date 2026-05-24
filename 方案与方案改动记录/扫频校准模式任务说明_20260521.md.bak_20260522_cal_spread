@@ -1,0 +1,37 @@
+# 扫频校准模式任务说明
+
+## 当前目标
+
+- 上电后不再自动进入扫频判别，等待用户在屏幕上选择 `校准` 或 `任务`。
+- `校准`：用户人工关闭发射机，系统扫一遍默认频带，将环境基线临时保存到 RAM。
+- `任务`：用户开启发射机，系统执行当前主路：扫频锁定中心频率，然后进入调制类型判别。
+- 本版不做全频带 FFT 校准，不做掉电保存。
+
+## 实现边界
+
+- 校准基线、ADC 近轨/打满检测、差分扫频判定放在 `Core/App/Sweep` 内部。
+- 运行模式选择和任务调度放在 `Core/App/Tasks/ModDetectTask`。
+- UI 只通过 `ModDetectTask` 的公开接口切换模式，不直接访问扫频内部状态。
+- 代码保持最小改动，不新增独立源文件；如后续功能继续变大，再考虑拆分模块。
+
+## 关键行为
+
+- 校准模式只做粗扫，不进入细扫，不调用 `analyze_start()`。
+- 校准逐点输出格式为 `freq_mhz,vpp,step,clip`，例如 `131.000,685,110,0`。
+- 校准完成后输出 `cal:summary,point_cnt,clip_cnt,max_vpp,min_vpp,valid`。
+- 任务模式若校准表有效且频率网格一致，并且该频点基线幅度不低于 `APP_SWEEP_CAL_BASELINE_MIN_VPP`，使用 `max(raw_vpp - baseline_vpp, 0) + baseline_avg_vpp` 参与候选判定。
+- 校准基线低于 `APP_SWEEP_CAL_BASELINE_MIN_VPP` 的频点视为普通底噪，不参与差分扣减，避免弱噪声把任务扫频波形整体压低。
+- 任务模式若无有效校准表，自动退回原始 `raw_vpp` 判定。
+- 平台型 FM 候选取阈值频段中点；凹谷型候选取候选段内两个最高峰之间的最低点。
+- 候选需要同时满足 `APP_SWEEP_CANDIDATE_MIN_PEAK_VPP` 和 `APP_SWEEP_CANDIDATE_MIN_SCORE_VPP`，低于门限视为低能量噪声。
+- 无有效候选时最多按 `APP_SWEEP_MAX_RETRY_COUNT` 重复粗扫；仍失败则输出未锁定结果，任务层不进入分析。
+- ADC 任一路满足 `min <= 10` 或 `max >= 16373` 记为 clip，用于判断是否存在前级/ADC 饱和。
+- 细扫是否执行由 `APP_SWEEP_FINE_STAGE_ENABLE` 控制；细扫步进来源由 `APP_SWEEP_FINE_FIXED_STEP_ENABLE` 控制。
+
+## 测试重点
+
+- 不按按钮时不应自动扫频，也不应进入分析。
+- 关闭发射机点击 `校准`，应在 30 秒内完成并显示校准完成。
+- 开启发射机点击 `任务`，应完成扫频并进入分析。
+- 未校准直接点击 `任务`，应能按原逻辑工作。
+- 118MHz FM 平台应优先锁定到平台中点附近。
