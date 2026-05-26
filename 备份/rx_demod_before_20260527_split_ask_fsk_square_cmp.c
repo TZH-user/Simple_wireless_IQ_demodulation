@@ -122,25 +122,9 @@
 #define RX_ASK_DAC_LOW          RX_DAC_LOW_FROM_VPP_OFFSET_MV(RX_DEMOD_ASK_DAC_VPP_MV, RX_DEMOD_ASK_OUT_OFFSET_MV)
 #define RX_ASK_DAC_HIGH         RX_DAC_HIGH_FROM_VPP_OFFSET_MV(RX_DEMOD_ASK_DAC_VPP_MV, RX_DEMOD_ASK_OUT_OFFSET_MV)
 
-/*
- * 增强模式比较器参数。
- * DC_SHIFT 越大，自适应中心跟踪越慢，越不容易被单个边沿拖动；越小越能跟随慢漂移。
- * THRESHOLD_CODE 是相对自适应中心的触发幅度，越大越不容易被小毛刺触发。
- * HYST_CODE 是 DAC 码值滞回宽度，越大越不容易在非符号跳变区域误翻转。
- */
-#define RX_ASK_ANALOG_SQUARE_DC_SHIFT   6U
-#define RX_ASK_ANALOG_SQUARE_THRESHOLD_CODE 40
-#define RX_ASK_ANALOG_SQUARE_HYST_CODE  12
-#define RX_FSK_ANALOG_SQUARE_DC_SHIFT   6U
-#define RX_FSK_ANALOG_SQUARE_THRESHOLD_CODE 0
-#define RX_FSK_ANALOG_SQUARE_HYST_CODE  12
-
-typedef struct
-{
-    int32_t dc_q8;
-    uint8_t dc_valid;
-    uint16_t last_dac;
-} RxAnalogSquareState;
+/* 增强模式走模拟解调后再比较成方波；数值越大越不容易被波形抖动误翻转。 */
+#define RX_ANALOG_SQUARE_DC_SHIFT       8U
+#define RX_ANALOG_SQUARE_HYST_CODE      100
 
 static int32_t g_fsk_i_dc = 0;
 static int32_t g_fsk_q_dc = 0;
@@ -187,8 +171,9 @@ static uint8_t g_ask_cluster_valid = 0U;
 static uint16_t g_ask_last_dac = RX_ASK_DAC_LOW;
 static uint32_t g_ask_debug_symbol_count = 0U;
 
-static RxAnalogSquareState g_ask_analog_square_state = {0, 0U, RX_ASK_DAC_LOW};
-static RxAnalogSquareState g_fsk_analog_square_state = {0, 0U, RX_FSK_DAC_LOW};
+static int32_t g_analog_square_dc_q8 = 0;
+static uint8_t g_analog_square_dc_valid = 0U;
+static uint16_t g_analog_square_last_dac = RX_DAC_LOW_FROM_VPP_OFFSET_MV(RX_DEMOD_ASK_DAC_VPP_MV, RX_DEMOD_ASK_OUT_OFFSET_MV);
 
 static uint32_t g_sample_rate_hz = 480000U;
 static RxMode g_rx_mode = RX_MODE_AM;
@@ -980,15 +965,11 @@ static uint32_t rx_demod_limit_count(uint32_t n)
 static void rx_analog_square_from_dac(uint16_t *dac_out,
                                       uint32_t n,
                                       uint16_t low_code,
-                                      uint16_t high_code,
-                                      RxAnalogSquareState *state,
-                                      uint8_t dc_shift,
-                                      int32_t threshold_code,
-                                      int32_t hyst_code)
+                                      uint16_t high_code)
 {
     uint32_t i;
 
-    if ((dac_out == NULL) || (state == NULL) || (n == 0U))
+    if ((dac_out == NULL) || (n == 0U))
     {
         return;
     }
@@ -997,41 +978,37 @@ static void rx_analog_square_from_dac(uint16_t *dac_out,
     {
         int32_t sample = (int32_t)dac_out[i];
         int32_t sample_q8 = sample << 8;
-        int32_t center;
-        int32_t high_th;
-        int32_t low_th;
+        int32_t threshold;
 
-        if (state->dc_valid == 0U)
+        if (g_analog_square_dc_valid == 0U)
         {
-            state->dc_q8 = sample_q8;
-            state->dc_valid = 1U;
-            state->last_dac = low_code;
+            g_analog_square_dc_q8 = sample_q8;
+            g_analog_square_dc_valid = 1U;
+            g_analog_square_last_dac = low_code;
         }
         else
         {
-            state->dc_q8 += rx_shift_round_s32(sample_q8 - state->dc_q8, dc_shift);
+            g_analog_square_dc_q8 += rx_shift_round_s32(sample_q8 - g_analog_square_dc_q8,
+                                                        RX_ANALOG_SQUARE_DC_SHIFT);
         }
 
-        center = (state->dc_q8 >> 8);
-        high_th = center + threshold_code + (hyst_code / 2);
-        low_th = center + threshold_code - (hyst_code / 2);
-
-        if (state->last_dac == high_code)
+        threshold = (g_analog_square_dc_q8 >> 8);
+        if (g_analog_square_last_dac == high_code)
         {
-            if (sample < low_th)
+            if (sample < (threshold - RX_ANALOG_SQUARE_HYST_CODE))
             {
-                state->last_dac = low_code;
+                g_analog_square_last_dac = low_code;
             }
         }
         else
         {
-            if (sample > high_th)
+            if (sample > (threshold + RX_ANALOG_SQUARE_HYST_CODE))
             {
-                state->last_dac = high_code;
+                g_analog_square_last_dac = high_code;
             }
         }
 
-        dac_out[i] = state->last_dac;
+        dac_out[i] = g_analog_square_last_dac;
     }
 }
 
@@ -1088,12 +1065,9 @@ void RxDemod_Reset(void)
     g_ask_last_dac = RX_ASK_DAC_LOW;
     g_ask_debug_symbol_count = 0U;
 
-    g_ask_analog_square_state.dc_q8 = 0;
-    g_ask_analog_square_state.dc_valid = 0U;
-    g_ask_analog_square_state.last_dac = RX_ASK_DAC_LOW;
-    g_fsk_analog_square_state.dc_q8 = 0;
-    g_fsk_analog_square_state.dc_valid = 0U;
-    g_fsk_analog_square_state.last_dac = RX_FSK_DAC_LOW;
+    g_analog_square_dc_q8 = 0;
+    g_analog_square_dc_valid = 0U;
+    g_analog_square_last_dac = RX_ASK_DAC_LOW;
 
     g_psk_i_dc = 0;
     g_psk_q_dc = 0;
@@ -1450,11 +1424,7 @@ void RxDemod_ASK_AnalogSquare_ProcessBlock(const uint16_t *i_adc,
     rx_analog_square_from_dac(dac_out,
                               rx_demod_limit_count(n),
                               RX_ASK_DAC_LOW,
-                              RX_ASK_DAC_HIGH,
-                              &g_ask_analog_square_state,
-                              RX_ASK_ANALOG_SQUARE_DC_SHIFT,
-                              RX_ASK_ANALOG_SQUARE_THRESHOLD_CODE,
-                              RX_ASK_ANALOG_SQUARE_HYST_CODE);
+                              RX_ASK_DAC_HIGH);
 }
 
 void RxDemod_FSK_AnalogSquare_ProcessBlock(const uint16_t *i_adc,
@@ -1466,11 +1436,7 @@ void RxDemod_FSK_AnalogSquare_ProcessBlock(const uint16_t *i_adc,
     rx_analog_square_from_dac(dac_out,
                               rx_demod_limit_count(n),
                               RX_FSK_DAC_LOW,
-                              RX_FSK_DAC_HIGH,
-                              &g_fsk_analog_square_state,
-                              RX_FSK_ANALOG_SQUARE_DC_SHIFT,
-                              RX_FSK_ANALOG_SQUARE_THRESHOLD_CODE,
-                              RX_FSK_ANALOG_SQUARE_HYST_CODE);
+                              RX_FSK_DAC_HIGH);
 }
 
 void RxDemod_FM_CMSIS_ProcessBlock(const uint16_t *i_adc,

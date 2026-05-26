@@ -7,20 +7,11 @@
 #include "RtosTypes.h"
 
 #include "app_dds_ctrl.h"
-#include "app_ad9959.h"
 #include "app_board_flash.h"
 
 #define APP_SWEEP_MAX_STEPS 512U
 #define APP_SWEEP_INVALID_STEP 0xFFFFU
 #define APP_SWEEP_DDS_CHANNEL 0U
-#define APP_SWEEP_DDS_MAX_AMP_CODE 1023U
-#define APP_SWEEP_DDS_BASE_AMP_CODE APP_AD9959_STARTUP_CH0_AMP_CODE
-#define APP_SWEEP_DDS_AMP_GAIN_NUM 3U
-#define APP_SWEEP_DDS_AMP_GAIN_DEN 2U
-#define APP_SWEEP_DDS_AMP_CODE_UNCLIPPED \
-    (((uint32_t)APP_SWEEP_DDS_BASE_AMP_CODE * APP_SWEEP_DDS_AMP_GAIN_NUM) / APP_SWEEP_DDS_AMP_GAIN_DEN)
-#define APP_SWEEP_DDS_AMP_CODE \
-    ((APP_SWEEP_DDS_AMP_CODE_UNCLIPPED > APP_SWEEP_DDS_MAX_AMP_CODE) ? APP_SWEEP_DDS_MAX_AMP_CODE : APP_SWEEP_DDS_AMP_CODE_UNCLIPPED)
 #define APP_SWEEP_DWELL_BLOCKS_PER_STEP 2U
 #define APP_SWEEP_MIN_RISE_RAW 80UL
 #define APP_SWEEP_THRESHOLD_SHIFT 2U
@@ -191,7 +182,6 @@ static uint32_t sweep_candidate_convex_freq_hz(uint16_t start_step,
                                                uint16_t stop_step,
                                                uint16_t peak_step,
                                                uint16_t width_steps);
-static void sweep_set_dds_amp_if_needed(void);
 static void sweep_set_dds(uint32_t freq_hz);
 static void sweep_start_stage(uint32_t start_hz, uint32_t stop_hz, uint32_t step_hz, app_sweep_stage_t stage);
 static void sweep_start_coarse(uint32_t start_hz, uint32_t stop_hz, uint32_t step_hz);
@@ -307,24 +297,6 @@ static uint32_t sweep_coarse_step_hz(uint32_t step_hz)
 #endif
 }
 
-/* 扫频使用固定幅度：默认按 CH0 上电幅度的 1.5 倍计算，超过 AD9959 幅度上限就限到最大值。 */
-static void sweep_set_dds_amp_if_needed(void)
-{
-    const AppDdsStatus *st = AppDDS_GetStatus();
-    AppDdsCmd cmd;
-    uint16_t sweep_amp = (uint16_t)APP_SWEEP_DDS_AMP_CODE;
-
-    if ((st != 0) && (st->amp_code[APP_SWEEP_DDS_CHANNEL] == sweep_amp))
-    {
-        return;
-    }
-
-    cmd = AppDDS_MakeSelectChCmd((uint8_t)APP_SWEEP_DDS_CHANNEL);
-    (void)AppDDS_DispatchCmd(&cmd);
-    cmd = AppDDS_MakeSetAmpCmd(sweep_amp);
-    (void)AppDDS_DispatchCmd(&cmd);
-}
-
 static void sweep_set_dds(uint32_t freq_hz)
 {
     AppDdsCmd cmd = AppDDS_MakeSetChFreqApplyCmd((uint8_t)APP_SWEEP_DDS_CHANNEL, freq_hz);
@@ -332,7 +304,6 @@ static void sweep_set_dds(uint32_t freq_hz)
     g_sweep.target_freq_hz = freq_hz;
     g_sweep.settle_blocks = APP_SWEEP_SETTLE_BLOCKS;
 
-    sweep_set_dds_amp_if_needed();
     (void)AppDDS_DispatchCmd(&cmd);
 }
 

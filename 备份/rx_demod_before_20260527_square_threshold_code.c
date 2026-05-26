@@ -125,14 +125,11 @@
 /*
  * 增强模式比较器参数。
  * DC_SHIFT 越大，自适应中心跟踪越慢，越不容易被单个边沿拖动；越小越能跟随慢漂移。
- * THRESHOLD_CODE 是相对自适应中心的触发幅度，越大越不容易被小毛刺触发。
- * HYST_CODE 是 DAC 码值滞回宽度，越大越不容易在非符号跳变区域误翻转。
+ * HYST_CODE 是 DAC 码值滞回半宽，越大越不容易在非符号跳变区域误翻转。
  */
 #define RX_ASK_ANALOG_SQUARE_DC_SHIFT   6U
-#define RX_ASK_ANALOG_SQUARE_THRESHOLD_CODE 40
 #define RX_ASK_ANALOG_SQUARE_HYST_CODE  12
-#define RX_FSK_ANALOG_SQUARE_DC_SHIFT   6U
-#define RX_FSK_ANALOG_SQUARE_THRESHOLD_CODE 0
+#define RX_FSK_ANALOG_SQUARE_DC_SHIFT   8U
 #define RX_FSK_ANALOG_SQUARE_HYST_CODE  12
 
 typedef struct
@@ -983,7 +980,6 @@ static void rx_analog_square_from_dac(uint16_t *dac_out,
                                       uint16_t high_code,
                                       RxAnalogSquareState *state,
                                       uint8_t dc_shift,
-                                      int32_t threshold_code,
                                       int32_t hyst_code)
 {
     uint32_t i;
@@ -997,9 +993,7 @@ static void rx_analog_square_from_dac(uint16_t *dac_out,
     {
         int32_t sample = (int32_t)dac_out[i];
         int32_t sample_q8 = sample << 8;
-        int32_t center;
-        int32_t high_th;
-        int32_t low_th;
+        int32_t threshold;
 
         if (state->dc_valid == 0U)
         {
@@ -1012,20 +1006,17 @@ static void rx_analog_square_from_dac(uint16_t *dac_out,
             state->dc_q8 += rx_shift_round_s32(sample_q8 - state->dc_q8, dc_shift);
         }
 
-        center = (state->dc_q8 >> 8);
-        high_th = center + threshold_code + (hyst_code / 2);
-        low_th = center + threshold_code - (hyst_code / 2);
-
+        threshold = (state->dc_q8 >> 8);
         if (state->last_dac == high_code)
         {
-            if (sample < low_th)
+            if (sample < (threshold - hyst_code))
             {
                 state->last_dac = low_code;
             }
         }
         else
         {
-            if (sample > high_th)
+            if (sample > (threshold + hyst_code))
             {
                 state->last_dac = high_code;
             }
@@ -1453,7 +1444,6 @@ void RxDemod_ASK_AnalogSquare_ProcessBlock(const uint16_t *i_adc,
                               RX_ASK_DAC_HIGH,
                               &g_ask_analog_square_state,
                               RX_ASK_ANALOG_SQUARE_DC_SHIFT,
-                              RX_ASK_ANALOG_SQUARE_THRESHOLD_CODE,
                               RX_ASK_ANALOG_SQUARE_HYST_CODE);
 }
 
@@ -1469,7 +1459,6 @@ void RxDemod_FSK_AnalogSquare_ProcessBlock(const uint16_t *i_adc,
                               RX_FSK_DAC_HIGH,
                               &g_fsk_analog_square_state,
                               RX_FSK_ANALOG_SQUARE_DC_SHIFT,
-                              RX_FSK_ANALOG_SQUARE_THRESHOLD_CODE,
                               RX_FSK_ANALOG_SQUARE_HYST_CODE);
 }
 
