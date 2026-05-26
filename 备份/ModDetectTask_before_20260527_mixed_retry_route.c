@@ -44,7 +44,6 @@ static bool low_if_corrected = 0U;
 static uint8_t g_auto_task_requested = 0U;
 static uint8_t g_boot_auto_task_enable = 0U;
 static uint8_t g_self_test_ok_blocks = 0U;
-static uint8_t g_mixed_retry_used = 0U;
 static moddetect_run_mode_t g_run_mode = MODDETECT_RUN_IDLE;
 static moddetect_run_mode_t g_requested_mode = MODDETECT_RUN_IDLE;
 
@@ -67,7 +66,6 @@ static void moddetect_request_ocxo_dds_output(void);
 static uint8_t moddetect_self_test_is_ready(void);
 static void moddetect_auto_start_task_if_ready(void);
 static uint8_t moddetect_try_low_if_correction(void);
-static uint8_t moddetect_try_mixed_reanalyze(const analyze_result_t *result);
 
 /* 将 ADC 数据块发布到 ModDetectTask 以供处理；如果上一个块仍在处理中，则增加丢弃计数。 */
 void sweep_task_publish_block(const uint16_t *i_buf, const uint16_t *q_buf, uint32_t sample_cnt)
@@ -287,64 +285,6 @@ static uint8_t moddetect_try_low_if_correction(void)
 #endif
 }
 
-/* 识别结果仍为 MIXED 时，按设置次数重新分析同一锁定中心，减少偶发误判。 */
-static uint8_t moddetect_try_mixed_reanalyze(const analyze_result_t *result)
-{
-    uint8_t retry_limit;
-    uint8_t allow_retry;
-    uint32_t center_hz;
-    char log_buf[128];
-    int n;
-
-    if ((result == NULL) || (result->done == 0U) || (result->mode != ANALYZE_MODE_MIXED))
-    {
-        return 0U;
-    }
-
-    retry_limit = app_ocxo_cal_get_mixed_retry_count();
-    if (retry_limit == 0U)
-    {
-        return 0U;
-    }
-
-    allow_retry = 0U;
-    if (retry_limit == APP_OCXO_CAL_MIXED_RETRY_INFINITE)
-    {
-        allow_retry = 1U;
-    }
-    else if (g_mixed_retry_used < retry_limit)
-    {
-        allow_retry = 1U;
-    }
-
-    if (allow_retry == 0U)
-    {
-        return 0U;
-    }
-
-    center_hz = (result->center_hz != 0UL) ? result->center_hz : g_sweep_task_stats.center_hz;
-    if (center_hz == 0UL)
-    {
-        return 0U;
-    }
-
-    g_mixed_retry_used++;
-    n = snprintf(log_buf,
-                 sizeof(log_buf),
-                 "moddetect: mixed retry %u/%u center=%luHz\r\n",
-                 (unsigned int)g_mixed_retry_used,
-                 (unsigned int)retry_limit,
-                 (unsigned long)center_hz);
-    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
-    {
-        print_queue_send(log_buf);
-    }
-
-    analyze_start(center_hz);
-    analyze_log_flush_step(MODDETECT_ANALYZE_LOG_FLUSH_LINES);
-    return 1U;
-}
-
 /* 判断当前是否正在执行不可中断流程，用于拒绝按钮重复启动。 */
 static uint8_t moddetect_is_busy_for_new_request(void)
 {
@@ -458,7 +398,6 @@ static void moddetect_apply_mode_request(void)
     demod_triggered = 0U;
 #endif
     low_if_corrected = 0U;
-    g_mixed_retry_used = 0U;
     demod_task_stop();
 
     if (requested == MODDETECT_RUN_OCXO_CAL)
@@ -659,28 +598,20 @@ void StartModDetectTask(void *argument)
 
         if (analyze_rest != 0U)
         {
-            analyze_result_t result;
-
             if (moddetect_try_low_if_correction() != 0U)
             {
                 continue;
             }
-            analyze_get_result(&result);
-            if ((result.done != 0U) && (moddetect_try_mixed_reanalyze(&result) != 0U))
-            {
-                continue;
-            }
-            /* CW 没有基带信息需要输出，只停在分析结果；其它类型按设置自动进入解调。 */
+            /* Analyze 完成后默认停在识别结果；如需直通解调，打开 MODDETECT_AUTO_DEMOD_ENABLE。 */
 #if (MODDETECT_AUTO_DEMOD_ENABLE != 0U)
             if (demod_triggered == 0U)
             {
+                analyze_result_t result;
+                analyze_get_result(&result);
                 if (result.done != 0U)
                 {
                     app_buzzer_notify_analyze_done();
-                    if (result.mode != ANALYZE_MODE_CW)
-                    {
-                        demod_task_start_with_result(&result);
-                    }
+                    demod_task_start_with_result(&result);
                     demod_triggered = 1U;
                 }
             }

@@ -19,14 +19,6 @@
 #define DEMOD_DAC_OUT2_ENABLE      1U
 #define DEMOD_DAC_IDLE_CODE        2048U
 #define DEMOD_DEFAULT_SYMBOL_RATE_HZ 10000U
-/* 解调输出通道控制开关：1=按调制类型驱动 CH_IN/CH_OUT，0=只打印路由日志。 */
-#define DEMOD_OUTPUT_ROUTE_RELAY_ENABLE 1U
-/* 模拟调制输出通道电平：ON 低电平，OUT 高电平。 */
-#define DEMOD_ROUTE_ANALOG_CH_IN_LEVEL  GPIO_PIN_RESET
-#define DEMOD_ROUTE_ANALOG_CH_OUT_LEVEL GPIO_PIN_SET
-/* 数字调制输出通道电平：ON 高电平，OUT 低电平。 */
-#define DEMOD_ROUTE_DIGITAL_CH_IN_LEVEL  GPIO_PIN_SET
-#define DEMOD_ROUTE_DIGITAL_CH_OUT_LEVEL GPIO_PIN_RESET
 /* 解调算力监控开关：1=输出 demod_perf 周期/漏块/DAC 刷新统计，0=完全关闭该监控。 */
 #define DEMOD_PERF_MONITOR_ENABLE  1U
 /* 解调算力日志间隔，单位为已处理 ADC 块；512 块约 1 秒，避免串口日志影响实时性。 */
@@ -124,7 +116,7 @@ static uint8_t            g_demod_dac_out2_started = 0U;
 static uint8_t            g_demod_dac_irq_configured = 0U;
 #if (DEMOD_PERF_MONITOR_ENABLE != 0U)
 static demod_perf_stats_t g_demod_perf;
-static demod_mode_perf_t  g_demod_mode_perf[RX_MODE_FSK_ANALOG_SQUARE + 1U];
+static demod_mode_perf_t  g_demod_mode_perf[RX_MODE_PSK + 1U];
 #endif
 #if (DEMOD_RUNTIME_MONITOR_BUILD_ENABLE != 0U)
 static demod_runtime_monitor_t g_demod_monitor;
@@ -385,7 +377,7 @@ static void demod_perf_counter_init(void)
 
 static uint32_t demod_perf_mode_index(RxMode mode)
 {
-    return ((uint32_t)mode <= (uint32_t)RX_MODE_FSK_ANALOG_SQUARE) ? (uint32_t)mode : 0UL;
+    return ((uint32_t)mode <= (uint32_t)RX_MODE_PSK) ? (uint32_t)mode : 0UL;
 }
 
 static uint32_t demod_perf_budget_cycles(uint32_t sample_cnt)
@@ -481,58 +473,13 @@ static RxMode demod_map_mode(analyze_mode_t analyze_mode)
     {
     case ANALYZE_MODE_AM:  return RX_MODE_AM;
     case ANALYZE_MODE_ASK:
-        return (app_ocxo_cal_get_ask_analog_demod_enable() != 0U) ? RX_MODE_ASK_ANALOG_SQUARE : RX_MODE_ASK;
+        return (app_ocxo_cal_get_ask_analog_demod_enable() != 0U) ? RX_MODE_AM : RX_MODE_ASK;
     case ANALYZE_MODE_FM:  return RX_MODE_FM;
     case ANALYZE_MODE_FSK:
-        return (app_ocxo_cal_get_fsk_analog_demod_enable() != 0U) ? RX_MODE_FSK_ANALOG_SQUARE : RX_MODE_FSK;
+        return (app_ocxo_cal_get_fsk_analog_demod_enable() != 0U) ? RX_MODE_FM : RX_MODE_FSK;
     case ANALYZE_MODE_PSK: return RX_MODE_PSK;
     case ANALYZE_MODE_CW:  return RX_MODE_LOOPBACK;
     default:               return RX_MODE_LOOPBACK;
-    }
-}
-
-/* 根据识别出的调制类型选择数字/模拟解调输出通道。 */
-/* 根据目标通道输出继电器控制电平，CH_IN/CH_OUT 的默认电平由 GPIO 初始化保持为低。 */
-static void demod_apply_output_route(uint8_t digital_route)
-{
-#if (DEMOD_OUTPUT_ROUTE_RELAY_ENABLE != 0U)
-    if (digital_route != 0U)
-    {
-        HAL_GPIO_WritePin(CH_IN_GPIO_Port, CH_IN_Pin, DEMOD_ROUTE_DIGITAL_CH_IN_LEVEL);
-        HAL_GPIO_WritePin(CH_OUT_GPIO_Port, CH_OUT_Pin, DEMOD_ROUTE_DIGITAL_CH_OUT_LEVEL);
-    }
-    else
-    {
-        HAL_GPIO_WritePin(CH_IN_GPIO_Port, CH_IN_Pin, DEMOD_ROUTE_ANALOG_CH_IN_LEVEL);
-        HAL_GPIO_WritePin(CH_OUT_GPIO_Port, CH_OUT_Pin, DEMOD_ROUTE_ANALOG_CH_OUT_LEVEL);
-    }
-#else
-    (void)digital_route;
-#endif
-}
-
-static void demod_select_output_route(analyze_mode_t analyze_mode)
-{
-    uint8_t digital_route = 0U;
-    char log_buf[64];
-    int n;
-
-    if ((analyze_mode == ANALYZE_MODE_ASK) ||
-        (analyze_mode == ANALYZE_MODE_FSK) ||
-        (analyze_mode == ANALYZE_MODE_PSK))
-    {
-        digital_route = 1U;
-    }
-
-    demod_apply_output_route(digital_route);
-
-    n = snprintf(log_buf,
-                 sizeof(log_buf),
-                 "demod: route %s\r\n",
-                 (digital_route != 0U) ? "digital" : "analog");
-    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
-    {
-        print_queue_send(log_buf);
     }
 }
 
@@ -582,12 +529,6 @@ static void demod_process_block(RxMode            rx_mode,
         break;
     case RX_MODE_PSK:
         RxDemod_PSK_ProcessBlock(i_buf, q_buf, n, dac_out);
-        break;
-    case RX_MODE_ASK_ANALOG_SQUARE:
-        RxDemod_ASK_AnalogSquare_ProcessBlock(i_buf, q_buf, n, dac_out);
-        break;
-    case RX_MODE_FSK_ANALOG_SQUARE:
-        RxDemod_FSK_AnalogSquare_ProcessBlock(i_buf, q_buf, n, dac_out);
         break;
     default:
         break;
@@ -835,7 +776,6 @@ void StartDemodTask(void *argument)
 
             current_mode = demod_map_mode(result.mode);
             demod_symbol_rate_hz = demod_symbol_rate_from_result(&result);
-            demod_select_output_route(result.mode);
             RxDemod_SetMode(current_mode);
             RxDemod_ConfigureSignal(demod_symbol_rate_hz,
                                      result.low_if_hz,

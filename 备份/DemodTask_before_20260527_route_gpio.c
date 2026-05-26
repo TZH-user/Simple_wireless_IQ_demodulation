@@ -19,14 +19,8 @@
 #define DEMOD_DAC_OUT2_ENABLE      1U
 #define DEMOD_DAC_IDLE_CODE        2048U
 #define DEMOD_DEFAULT_SYMBOL_RATE_HZ 10000U
-/* 解调输出通道控制开关：1=按调制类型驱动 CH_IN/CH_OUT，0=只打印路由日志。 */
-#define DEMOD_OUTPUT_ROUTE_RELAY_ENABLE 1U
-/* 模拟调制输出通道电平：ON 低电平，OUT 高电平。 */
-#define DEMOD_ROUTE_ANALOG_CH_IN_LEVEL  GPIO_PIN_RESET
-#define DEMOD_ROUTE_ANALOG_CH_OUT_LEVEL GPIO_PIN_SET
-/* 数字调制输出通道电平：ON 高电平，OUT 低电平。 */
-#define DEMOD_ROUTE_DIGITAL_CH_IN_LEVEL  GPIO_PIN_SET
-#define DEMOD_ROUTE_DIGITAL_CH_OUT_LEVEL GPIO_PIN_RESET
+/* 继电器通道预留：0=只记录目标通道，等硬件引脚确定后再真正控制。 */
+#define DEMOD_OUTPUT_ROUTE_RELAY_ENABLE 0U
 /* 解调算力监控开关：1=输出 demod_perf 周期/漏块/DAC 刷新统计，0=完全关闭该监控。 */
 #define DEMOD_PERF_MONITOR_ENABLE  1U
 /* 解调算力日志间隔，单位为已处理 ADC 块；512 块约 1 秒，避免串口日志影响实时性。 */
@@ -491,26 +485,7 @@ static RxMode demod_map_mode(analyze_mode_t analyze_mode)
     }
 }
 
-/* 根据识别出的调制类型选择数字/模拟解调输出通道。 */
-/* 根据目标通道输出继电器控制电平，CH_IN/CH_OUT 的默认电平由 GPIO 初始化保持为低。 */
-static void demod_apply_output_route(uint8_t digital_route)
-{
-#if (DEMOD_OUTPUT_ROUTE_RELAY_ENABLE != 0U)
-    if (digital_route != 0U)
-    {
-        HAL_GPIO_WritePin(CH_IN_GPIO_Port, CH_IN_Pin, DEMOD_ROUTE_DIGITAL_CH_IN_LEVEL);
-        HAL_GPIO_WritePin(CH_OUT_GPIO_Port, CH_OUT_Pin, DEMOD_ROUTE_DIGITAL_CH_OUT_LEVEL);
-    }
-    else
-    {
-        HAL_GPIO_WritePin(CH_IN_GPIO_Port, CH_IN_Pin, DEMOD_ROUTE_ANALOG_CH_IN_LEVEL);
-        HAL_GPIO_WritePin(CH_OUT_GPIO_Port, CH_OUT_Pin, DEMOD_ROUTE_ANALOG_CH_OUT_LEVEL);
-    }
-#else
-    (void)digital_route;
-#endif
-}
-
+/* 根据识别类型预留数字/模拟输出通道选择；继电器控制脚确定后只需补这里。 */
 static void demod_select_output_route(analyze_mode_t analyze_mode)
 {
     uint8_t digital_route = 0U;
@@ -524,7 +499,9 @@ static void demod_select_output_route(analyze_mode_t analyze_mode)
         digital_route = 1U;
     }
 
-    demod_apply_output_route(digital_route);
+#if (DEMOD_OUTPUT_ROUTE_RELAY_ENABLE != 0U)
+    /* TODO: 等继电器控制引脚确认后，在这里输出数字/模拟通道选择电平。 */
+#endif
 
     n = snprintf(log_buf,
                  sizeof(log_buf),

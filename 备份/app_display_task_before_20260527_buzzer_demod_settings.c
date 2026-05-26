@@ -1,7 +1,6 @@
 #include "cmsis_os2.h"
 
 #include "../BootAnim/app_boot_anim.h"
-#include "app_buzzer.h"
 #include "app_display.h"
 #include "app_lvgl.h"
 #include "app_ocxo_cal.h"
@@ -28,7 +27,6 @@ void StartDisplayTask(void *argument)
   {
     App_BootAnimPlay();
   }
-  app_buzzer_init();
   App_LvglInit();
 
   /*
@@ -37,7 +35,6 @@ void StartDisplayTask(void *argument)
    */
   for(;;) {
     /* LVGL 主循环保持轻量，避免在该任务里做阻塞式外设读写。 */
-    app_buzzer_process();
     App_LvglRun();
     osDelay(5);
   }

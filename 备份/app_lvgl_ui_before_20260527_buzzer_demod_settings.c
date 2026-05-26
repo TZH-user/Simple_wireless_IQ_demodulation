@@ -11,7 +11,6 @@
 #include "DemodTask.h"
 #include "SI5351.h"
 #include "app_dds_ctrl.h"
-#include "app_buzzer.h"
 #include "app_ocxo_cal.h"
 #include "RtosTypes.h"
 #include "lvgl.h"
@@ -66,14 +65,7 @@ typedef enum
   APP_UI_OCXO_SAVE,
   APP_UI_AUTO_TASK_TOGGLE,
   APP_UI_BOOT_ANIM_TOGGLE,
-  APP_UI_RUNTIME_MONITOR_TOGGLE,
-  APP_UI_ASK_DEMOD_TOGGLE,
-  APP_UI_FSK_DEMOD_TOGGLE,
-  APP_UI_BEEP_UI_TOGGLE,
-  APP_UI_BEEP_SWEEP_LOCK_TOGGLE,
-  APP_UI_BEEP_ANALYZE_DONE_TOGGLE,
-  APP_UI_BEEP_DEMOD_START_TOGGLE,
-  APP_UI_MIXED_RETRY_CYCLE
+  APP_UI_RUNTIME_MONITOR_TOGGLE
 } app_ui_ocxo_action_t;
 
 typedef enum
@@ -122,22 +114,6 @@ typedef struct
   lv_obj_t *boot_anim_label;
   lv_obj_t *runtime_monitor_btn;
   lv_obj_t *runtime_monitor_label;
-  lv_obj_t *mixed_retry_btn;
-  lv_obj_t *mixed_retry_label;
-  lv_obj_t *demod_setting_title;
-  lv_obj_t *ask_demod_btn;
-  lv_obj_t *ask_demod_label;
-  lv_obj_t *fsk_demod_btn;
-  lv_obj_t *fsk_demod_label;
-  lv_obj_t *beep_setting_title;
-  lv_obj_t *beep_ui_btn;
-  lv_obj_t *beep_ui_label;
-  lv_obj_t *beep_lock_btn;
-  lv_obj_t *beep_lock_label;
-  lv_obj_t *beep_analyze_btn;
-  lv_obj_t *beep_analyze_label;
-  lv_obj_t *beep_demod_btn;
-  lv_obj_t *beep_demod_label;
   lv_obj_t *menu_cal_btn;
   lv_obj_t *menu_task_btn;
   lv_obj_t *menu_settings_btn;
@@ -195,9 +171,6 @@ static uint8_t App_LvglUiShouldShowOcxoControls(const moddetect_task_stats_t *st
 static void App_LvglUiRefreshAutoTaskButton(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshBootAnimButton(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshRuntimeMonitorButton(const app_ocxo_cal_status_t *ocxo_status);
-static void App_LvglUiRefreshMixedRetryButton(const app_ocxo_cal_status_t *ocxo_status);
-static void App_LvglUiRefreshDemodSettingButtons(const app_ocxo_cal_status_t *ocxo_status);
-static void App_LvglUiRefreshBuzzerButtons(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshOcxoControls(const moddetect_task_stats_t *stats, const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshMenuVisibility(const moddetect_task_stats_t *stats);
 static void App_LvglUiRefreshMenuButtons(void);
@@ -386,36 +359,10 @@ void App_LvglUiInit(void)
 
   g_ui.auto_task_btn = App_LvglUiCreateOcxoButton(main_card, "AUTO ON", UI_ACTION_X, 70, 124, APP_UI_AUTO_TASK_TOGGLE);
   g_ui.auto_task_label = lv_obj_get_child(g_ui.auto_task_btn, 0);
-  g_ui.boot_anim_btn = App_LvglUiCreateOcxoButton(main_card, "ANIM ON", UI_ACTION_X + 120, 70, 110, APP_UI_BOOT_ANIM_TOGGLE);
+  g_ui.boot_anim_btn = App_LvglUiCreateOcxoButton(main_card, "ANIM ON", UI_ACTION_X, 116, 124, APP_UI_BOOT_ANIM_TOGGLE);
   g_ui.boot_anim_label = lv_obj_get_child(g_ui.boot_anim_btn, 0);
-  g_ui.runtime_monitor_btn = App_LvglUiCreateOcxoButton(main_card, "MON OFF", UI_ACTION_X, 116, 110, APP_UI_RUNTIME_MONITOR_TOGGLE);
+  g_ui.runtime_monitor_btn = App_LvglUiCreateOcxoButton(main_card, "MON OFF", UI_ACTION_X, 162, 124, APP_UI_RUNTIME_MONITOR_TOGGLE);
   g_ui.runtime_monitor_label = lv_obj_get_child(g_ui.runtime_monitor_btn, 0);
-  g_ui.mixed_retry_btn = App_LvglUiCreateOcxoButton(main_card, "MIX R3", UI_ACTION_X + 120, 116, 110, APP_UI_MIXED_RETRY_CYCLE);
-  g_ui.mixed_retry_label = lv_obj_get_child(g_ui.mixed_retry_btn, 0);
-
-  g_ui.demod_setting_title = lv_label_create(main_card);
-  lv_label_set_text(g_ui.demod_setting_title, "DEMOD");
-  lv_obj_set_style_text_color(g_ui.demod_setting_title, lv_color_hex(0xEAF2FF), 0);
-  lv_obj_set_style_text_font(g_ui.demod_setting_title, &lv_font_montserrat_14, 0);
-  lv_obj_align(g_ui.demod_setting_title, LV_ALIGN_TOP_LEFT, UI_ACTION_X, 158);
-  g_ui.ask_demod_btn = App_LvglUiCreateOcxoButton(main_card, "ASK NORM", UI_ACTION_X, 180, 110, APP_UI_ASK_DEMOD_TOGGLE);
-  g_ui.ask_demod_label = lv_obj_get_child(g_ui.ask_demod_btn, 0);
-  g_ui.fsk_demod_btn = App_LvglUiCreateOcxoButton(main_card, "FSK NORM", UI_ACTION_X + 120, 180, 110, APP_UI_FSK_DEMOD_TOGGLE);
-  g_ui.fsk_demod_label = lv_obj_get_child(g_ui.fsk_demod_btn, 0);
-
-  g_ui.beep_setting_title = lv_label_create(main_card);
-  lv_label_set_text(g_ui.beep_setting_title, "BEEP");
-  lv_obj_set_style_text_color(g_ui.beep_setting_title, lv_color_hex(0xEAF2FF), 0);
-  lv_obj_set_style_text_font(g_ui.beep_setting_title, &lv_font_montserrat_14, 0);
-  lv_obj_align(g_ui.beep_setting_title, LV_ALIGN_TOP_LEFT, UI_ACTION_X, 226);
-  g_ui.beep_ui_btn = App_LvglUiCreateOcxoButton(main_card, "UI OFF", UI_ACTION_X, 248, 110, APP_UI_BEEP_UI_TOGGLE);
-  g_ui.beep_ui_label = lv_obj_get_child(g_ui.beep_ui_btn, 0);
-  g_ui.beep_lock_btn = App_LvglUiCreateOcxoButton(main_card, "LOCK OFF", UI_ACTION_X + 120, 248, 110, APP_UI_BEEP_SWEEP_LOCK_TOGGLE);
-  g_ui.beep_lock_label = lv_obj_get_child(g_ui.beep_lock_btn, 0);
-  g_ui.beep_analyze_btn = App_LvglUiCreateOcxoButton(main_card, "ANA OFF", UI_ACTION_X, 294, 110, APP_UI_BEEP_ANALYZE_DONE_TOGGLE);
-  g_ui.beep_analyze_label = lv_obj_get_child(g_ui.beep_analyze_btn, 0);
-  g_ui.beep_demod_btn = App_LvglUiCreateOcxoButton(main_card, "DEM OFF", UI_ACTION_X + 120, 294, 110, APP_UI_BEEP_DEMOD_START_TOGGLE);
-  g_ui.beep_demod_label = lv_obj_get_child(g_ui.beep_demod_btn, 0);
 
   g_ui.mod_value = lv_label_create(main_card);
   lv_label_set_text(g_ui.mod_value, "Mode: --");
@@ -473,9 +420,6 @@ void App_LvglUiRefresh(void)
   App_LvglUiRefreshAutoTaskButton(&ocxo_status);
   App_LvglUiRefreshBootAnimButton(&ocxo_status);
   App_LvglUiRefreshRuntimeMonitorButton(&ocxo_status);
-  App_LvglUiRefreshMixedRetryButton(&ocxo_status);
-  App_LvglUiRefreshDemodSettingButtons(&ocxo_status);
-  App_LvglUiRefreshBuzzerButtons(&ocxo_status);
   App_LvglUiRefreshOcxoControls(&st, &ocxo_status);
   App_LvglUiRefreshMenuVisibility(&st);
   App_LvglUiRefreshMenuButtons();
@@ -497,7 +441,7 @@ static void App_LvglUiSetStatus(app_ui_status_t status)
   switch (status)
   {
     case APP_UI_STATUS_DONE:
-      text = "ANALYZE OK";
+      text = "DONE";
       bg = lv_color_hex(0x22C55E);
       break;
 
@@ -699,92 +643,6 @@ static void App_LvglUiRefreshRuntimeMonitorButton(const app_ocxo_cal_status_t *o
   }
 }
 
-static void App_LvglUiRefreshMixedRetryButton(const app_ocxo_cal_status_t *ocxo_status)
-{
-  if ((g_ui.mixed_retry_btn == NULL) || (g_ui.mixed_retry_label == NULL) || (ocxo_status == NULL))
-  {
-    return;
-  }
-
-  if (ocxo_status->mixed_retry_count == APP_OCXO_CAL_MIXED_RETRY_INFINITE)
-  {
-    lv_label_set_text(g_ui.mixed_retry_label, "MIX INF");
-    lv_obj_set_style_bg_color(g_ui.mixed_retry_btn, lv_color_hex(0x16A34A), 0);
-  }
-  else
-  {
-    lv_label_set_text_fmt(g_ui.mixed_retry_label, "MIX R%u", (unsigned int)ocxo_status->mixed_retry_count);
-    lv_obj_set_style_bg_color(g_ui.mixed_retry_btn,
-                              (ocxo_status->mixed_retry_count != 0U) ? lv_color_hex(0x16A34A) : lv_color_hex(0x64748B),
-                              0);
-  }
-}
-
-static void App_LvglUiSetToggleButton(lv_obj_t *btn,
-                                      lv_obj_t *label,
-                                      uint8_t enabled,
-                                      const char *on_text,
-                                      const char *off_text)
-{
-  if ((btn == NULL) || (label == NULL) || (on_text == NULL) || (off_text == NULL))
-  {
-    return;
-  }
-
-  lv_label_set_text(label, (enabled != 0U) ? on_text : off_text);
-  lv_obj_set_style_bg_color(btn,
-                            (enabled != 0U) ? lv_color_hex(0x16A34A) : lv_color_hex(0x64748B),
-                            0);
-}
-
-static void App_LvglUiRefreshDemodSettingButtons(const app_ocxo_cal_status_t *ocxo_status)
-{
-  if (ocxo_status == NULL)
-  {
-    return;
-  }
-
-  App_LvglUiSetToggleButton(g_ui.ask_demod_btn,
-                            g_ui.ask_demod_label,
-                            ocxo_status->ask_analog_demod_enable,
-                            "ASK ENH",
-                            "ASK NORM");
-  App_LvglUiSetToggleButton(g_ui.fsk_demod_btn,
-                            g_ui.fsk_demod_label,
-                            ocxo_status->fsk_analog_demod_enable,
-                            "FSK ENH",
-                            "FSK NORM");
-}
-
-static void App_LvglUiRefreshBuzzerButtons(const app_ocxo_cal_status_t *ocxo_status)
-{
-  if (ocxo_status == NULL)
-  {
-    return;
-  }
-
-  App_LvglUiSetToggleButton(g_ui.beep_ui_btn,
-                            g_ui.beep_ui_label,
-                            ocxo_status->beep_ui_enable,
-                            "UI ON",
-                            "UI OFF");
-  App_LvglUiSetToggleButton(g_ui.beep_lock_btn,
-                            g_ui.beep_lock_label,
-                            ocxo_status->beep_sweep_lock_enable,
-                            "LOCK ON",
-                            "LOCK OFF");
-  App_LvglUiSetToggleButton(g_ui.beep_analyze_btn,
-                            g_ui.beep_analyze_label,
-                            ocxo_status->beep_analyze_done_enable,
-                            "ANA ON",
-                            "ANA OFF");
-  App_LvglUiSetToggleButton(g_ui.beep_demod_btn,
-                            g_ui.beep_demod_label,
-                            ocxo_status->beep_demod_start_enable,
-                            "DEM ON",
-                            "DEM OFF");
-}
-
 static void App_LvglUiRefreshOcxoControls(const moddetect_task_stats_t *stats, const app_ocxo_cal_status_t *ocxo_status)
 {
   uint8_t show_controls = App_LvglUiShouldShowOcxoControls(stats);
@@ -822,19 +680,9 @@ static void App_LvglUiRefreshMenuVisibility(const moddetect_task_stats_t *stats)
   App_LvglUiSetOneHidden(g_ui.calibrate_btn, (show_cal == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.ocxo_btn, (show_cal == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.task_btn, (show_task == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.scan_status, (show_settings != 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.auto_task_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.boot_anim_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.runtime_monitor_btn, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.mixed_retry_btn, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.demod_setting_title, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.ask_demod_btn, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.fsk_demod_btn, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.beep_setting_title, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.beep_ui_btn, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.beep_lock_btn, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.beep_analyze_btn, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.beep_demod_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOcxoControlsVisible(show_ocxo_controls);
 }
 
@@ -1055,12 +903,6 @@ static void App_LvglUiRefreshOverallStatus(const moddetect_task_stats_t *stats, 
   {
     App_LvglUiSetHwStatus(g_ui.overall_status, "RUNNING", lv_color_hex(0xCA8A04));
   }
-  else if ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_TASK) &&
-           (stats->result_ready != 0U) && (stats->center_hz != 0UL) &&
-           (analyze_is_done() != 0U))
-  {
-    App_LvglUiSetHwStatus(g_ui.overall_status, "ANALYZE OK", lv_color_hex(0x16A34A));
-  }
   else if (si_ready == 0U)
   {
     App_LvglUiSetHwStatus(g_ui.overall_status, "HW WAIT", lv_color_hex(0xCA8A04));
@@ -1260,8 +1102,6 @@ static void App_LvglUiLeaveOcxoCalIfActive(void)
 /* UI 命令入口：事件回调只提交命令，具体状态变更集中在这里维护。 */
 static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
 {
-  app_buzzer_notify_ui_action();
-
   if (command == APP_UI_CMD_MENU)
   {
     if (value <= (uintptr_t)APP_UI_MENU_SETTINGS)
@@ -1321,54 +1161,6 @@ static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
     {
       uint8_t next_enable = (app_ocxo_cal_get_runtime_monitor_enable() == 0U) ? 1U : 0U;
       (void)app_ocxo_cal_set_runtime_monitor_enable(next_enable);
-      return;
-    }
-
-    if (action == APP_UI_MIXED_RETRY_CYCLE)
-    {
-      (void)app_ocxo_cal_cycle_mixed_retry_count();
-      return;
-    }
-
-    if (action == APP_UI_ASK_DEMOD_TOGGLE)
-    {
-      uint8_t next_enable = (app_ocxo_cal_get_ask_analog_demod_enable() == 0U) ? 1U : 0U;
-      (void)app_ocxo_cal_set_ask_analog_demod_enable(next_enable);
-      return;
-    }
-
-    if (action == APP_UI_FSK_DEMOD_TOGGLE)
-    {
-      uint8_t next_enable = (app_ocxo_cal_get_fsk_analog_demod_enable() == 0U) ? 1U : 0U;
-      (void)app_ocxo_cal_set_fsk_analog_demod_enable(next_enable);
-      return;
-    }
-
-    if (action == APP_UI_BEEP_UI_TOGGLE)
-    {
-      uint8_t next_enable = (app_ocxo_cal_get_beep_ui_enable() == 0U) ? 1U : 0U;
-      (void)app_ocxo_cal_set_beep_ui_enable(next_enable);
-      return;
-    }
-
-    if (action == APP_UI_BEEP_SWEEP_LOCK_TOGGLE)
-    {
-      uint8_t next_enable = (app_ocxo_cal_get_beep_sweep_lock_enable() == 0U) ? 1U : 0U;
-      (void)app_ocxo_cal_set_beep_sweep_lock_enable(next_enable);
-      return;
-    }
-
-    if (action == APP_UI_BEEP_ANALYZE_DONE_TOGGLE)
-    {
-      uint8_t next_enable = (app_ocxo_cal_get_beep_analyze_done_enable() == 0U) ? 1U : 0U;
-      (void)app_ocxo_cal_set_beep_analyze_done_enable(next_enable);
-      return;
-    }
-
-    if (action == APP_UI_BEEP_DEMOD_START_TOGGLE)
-    {
-      uint8_t next_enable = (app_ocxo_cal_get_beep_demod_start_enable() == 0U) ? 1U : 0U;
-      (void)app_ocxo_cal_set_beep_demod_start_enable(next_enable);
       return;
     }
 

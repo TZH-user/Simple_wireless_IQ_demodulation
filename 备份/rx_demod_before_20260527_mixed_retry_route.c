@@ -122,10 +122,6 @@
 #define RX_ASK_DAC_LOW          RX_DAC_LOW_FROM_VPP_OFFSET_MV(RX_DEMOD_ASK_DAC_VPP_MV, RX_DEMOD_ASK_OUT_OFFSET_MV)
 #define RX_ASK_DAC_HIGH         RX_DAC_HIGH_FROM_VPP_OFFSET_MV(RX_DEMOD_ASK_DAC_VPP_MV, RX_DEMOD_ASK_OUT_OFFSET_MV)
 
-/* 增强模式走模拟解调后再比较成方波；数值越大越不容易被波形抖动误翻转。 */
-#define RX_ANALOG_SQUARE_DC_SHIFT       8U
-#define RX_ANALOG_SQUARE_HYST_CODE      100
-
 static int32_t g_fsk_i_dc = 0;
 static int32_t g_fsk_q_dc = 0;
 static uint8_t g_fsk_iq_dc_valid = 0U;
@@ -170,10 +166,6 @@ static int32_t g_ask_threshold = 0;
 static uint8_t g_ask_cluster_valid = 0U;
 static uint16_t g_ask_last_dac = RX_ASK_DAC_LOW;
 static uint32_t g_ask_debug_symbol_count = 0U;
-
-static int32_t g_analog_square_dc_q8 = 0;
-static uint8_t g_analog_square_dc_valid = 0U;
-static uint16_t g_analog_square_last_dac = RX_DAC_LOW_FROM_VPP_OFFSET_MV(RX_DEMOD_ASK_DAC_VPP_MV, RX_DEMOD_ASK_OUT_OFFSET_MV);
 
 static uint32_t g_sample_rate_hz = 480000U;
 static RxMode g_rx_mode = RX_MODE_AM;
@@ -961,57 +953,6 @@ static uint32_t rx_demod_limit_count(uint32_t n)
     return n;
 }
 
-/* 对模拟解调输出做自适应中心比较，给数字增强模式输出稳定高低电平。 */
-static void rx_analog_square_from_dac(uint16_t *dac_out,
-                                      uint32_t n,
-                                      uint16_t low_code,
-                                      uint16_t high_code)
-{
-    uint32_t i;
-
-    if ((dac_out == NULL) || (n == 0U))
-    {
-        return;
-    }
-
-    for (i = 0U; i < n; ++i)
-    {
-        int32_t sample = (int32_t)dac_out[i];
-        int32_t sample_q8 = sample << 8;
-        int32_t threshold;
-
-        if (g_analog_square_dc_valid == 0U)
-        {
-            g_analog_square_dc_q8 = sample_q8;
-            g_analog_square_dc_valid = 1U;
-            g_analog_square_last_dac = low_code;
-        }
-        else
-        {
-            g_analog_square_dc_q8 += rx_shift_round_s32(sample_q8 - g_analog_square_dc_q8,
-                                                        RX_ANALOG_SQUARE_DC_SHIFT);
-        }
-
-        threshold = (g_analog_square_dc_q8 >> 8);
-        if (g_analog_square_last_dac == high_code)
-        {
-            if (sample < (threshold - RX_ANALOG_SQUARE_HYST_CODE))
-            {
-                g_analog_square_last_dac = low_code;
-            }
-        }
-        else
-        {
-            if (sample > (threshold + RX_ANALOG_SQUARE_HYST_CODE))
-            {
-                g_analog_square_last_dac = high_code;
-            }
-        }
-
-        dac_out[i] = g_analog_square_last_dac;
-    }
-}
-
 void RxDemod_Reset(void)
 {
     g_env_dc_q8 = 0;
@@ -1064,10 +1005,6 @@ void RxDemod_Reset(void)
     g_ask_cluster_valid = 0U;
     g_ask_last_dac = RX_ASK_DAC_LOW;
     g_ask_debug_symbol_count = 0U;
-
-    g_analog_square_dc_q8 = 0;
-    g_analog_square_dc_valid = 0U;
-    g_analog_square_last_dac = RX_ASK_DAC_LOW;
 
     g_psk_i_dc = 0;
     g_psk_q_dc = 0;
@@ -1413,30 +1350,6 @@ void RxDemod_FM_ProcessBlock(const uint16_t *i_adc,
 
         dac_out[i] = rx_clip_to_dac(y);
     }
-}
-
-void RxDemod_ASK_AnalogSquare_ProcessBlock(const uint16_t *i_adc,
-                                           const uint16_t *q_adc,
-                                           uint32_t n,
-                                           uint16_t *dac_out)
-{
-    RxDemod_AM_ProcessBlock(i_adc, q_adc, n, dac_out);
-    rx_analog_square_from_dac(dac_out,
-                              rx_demod_limit_count(n),
-                              RX_ASK_DAC_LOW,
-                              RX_ASK_DAC_HIGH);
-}
-
-void RxDemod_FSK_AnalogSquare_ProcessBlock(const uint16_t *i_adc,
-                                           const uint16_t *q_adc,
-                                           uint32_t n,
-                                           uint16_t *dac_out)
-{
-    RxDemod_FM_ProcessBlock(i_adc, q_adc, n, dac_out);
-    rx_analog_square_from_dac(dac_out,
-                              rx_demod_limit_count(n),
-                              RX_FSK_DAC_LOW,
-                              RX_FSK_DAC_HIGH);
 }
 
 void RxDemod_FM_CMSIS_ProcessBlock(const uint16_t *i_adc,

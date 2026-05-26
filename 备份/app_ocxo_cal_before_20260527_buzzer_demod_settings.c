@@ -12,7 +12,7 @@
 #define APP_OCXO_CAL_DAC_VREF_MV 3300U
 #define APP_OCXO_CAL_FLASH_ADDR (APP_BOARD_FLASH_TOTAL_SIZE - (2UL * APP_BOARD_FLASH_SECTOR_SIZE))
 #define APP_OCXO_CAL_FLASH_MAGIC 0x4F43584FUL
-#define APP_OCXO_CAL_FLASH_VERSION 6UL
+#define APP_OCXO_CAL_FLASH_VERSION 4UL
 #define APP_OCXO_CAL_FLASH_CRC_SEED 2166136261UL
 
 typedef struct
@@ -60,43 +60,6 @@ typedef struct
     uint32_t crc;
 } app_ocxo_cal_flash_record_v4_t;
 
-typedef struct
-{
-    uint32_t magic;
-    uint32_t version;
-    uint32_t record_size;
-    uint32_t dac_mv;
-    uint32_t auto_task_enable;
-    uint32_t boot_anim_enable;
-    uint32_t runtime_monitor_enable;
-    uint32_t ask_analog_demod_enable;
-    uint32_t fsk_analog_demod_enable;
-    uint32_t beep_ui_enable;
-    uint32_t beep_sweep_lock_enable;
-    uint32_t beep_analyze_done_enable;
-    uint32_t beep_demod_start_enable;
-    uint32_t crc;
-} app_ocxo_cal_flash_record_v5_t;
-
-typedef struct
-{
-    uint32_t magic;
-    uint32_t version;
-    uint32_t record_size;
-    uint32_t dac_mv;
-    uint32_t auto_task_enable;
-    uint32_t boot_anim_enable;
-    uint32_t runtime_monitor_enable;
-    uint32_t ask_analog_demod_enable;
-    uint32_t fsk_analog_demod_enable;
-    uint32_t beep_ui_enable;
-    uint32_t beep_sweep_lock_enable;
-    uint32_t beep_analyze_done_enable;
-    uint32_t beep_demod_start_enable;
-    uint32_t mixed_retry_count;
-    uint32_t crc;
-} app_ocxo_cal_flash_record_v6_t;
-
 static app_ocxo_cal_status_t g_ocxo_status =
 {
     .dac_mv = APP_OCXO_CAL_DEFAULT_MV,
@@ -106,35 +69,21 @@ static app_ocxo_cal_status_t g_ocxo_status =
     .flash_loaded = 0U,
     .auto_task_enable = APP_OCXO_CAL_AUTO_TASK_DEFAULT_ENABLE,
     .boot_anim_enable = APP_OCXO_CAL_BOOT_ANIM_DEFAULT_ENABLE,
-    .runtime_monitor_enable = APP_OCXO_CAL_RUNTIME_MONITOR_DEFAULT_ENABLE,
-    .ask_analog_demod_enable = APP_OCXO_CAL_ASK_ANALOG_DEMOD_DEFAULT_ENABLE,
-    .fsk_analog_demod_enable = APP_OCXO_CAL_FSK_ANALOG_DEMOD_DEFAULT_ENABLE,
-    .beep_ui_enable = APP_OCXO_CAL_BEEP_UI_DEFAULT_ENABLE,
-    .beep_sweep_lock_enable = APP_OCXO_CAL_BEEP_SWEEP_LOCK_DEFAULT_ENABLE,
-    .beep_analyze_done_enable = APP_OCXO_CAL_BEEP_ANALYZE_DONE_DEFAULT_ENABLE,
-    .beep_demod_start_enable = APP_OCXO_CAL_BEEP_DEMOD_START_DEFAULT_ENABLE,
-    .mixed_retry_count = APP_OCXO_CAL_MIXED_RETRY_DEFAULT_COUNT
+    .runtime_monitor_enable = APP_OCXO_CAL_RUNTIME_MONITOR_DEFAULT_ENABLE
 };
 static uint32_t g_ocxo_saved_mv = APP_OCXO_CAL_DEFAULT_MV;
-static app_ocxo_cal_flash_record_v6_t g_ocxo_flash_record;
+static app_ocxo_cal_flash_record_v4_t g_ocxo_flash_record;
 static uint8_t g_ocxo_initialized = 0U;
 
 static uint32_t app_ocxo_cal_limit_mv(uint32_t mv);
 static uint32_t app_ocxo_cal_mv_to_code(uint32_t mv);
 static void app_ocxo_cal_apply_dac(uint32_t mv);
 static uint32_t app_ocxo_cal_crc_bytes(const void *record, uint32_t crc_offset);
-static uint8_t app_ocxo_cal_decode_record(const app_ocxo_cal_flash_record_v6_t *record,
+static uint8_t app_ocxo_cal_decode_record(const app_ocxo_cal_flash_record_v4_t *record,
                                           uint32_t *dac_mv,
                                           uint8_t *auto_task_enable,
                                           uint8_t *boot_anim_enable,
-                                          uint8_t *runtime_monitor_enable,
-                                          uint8_t *ask_analog_demod_enable,
-                                          uint8_t *fsk_analog_demod_enable,
-                                          uint8_t *beep_ui_enable,
-                                          uint8_t *beep_sweep_lock_enable,
-                                          uint8_t *beep_analyze_done_enable,
-                                          uint8_t *beep_demod_start_enable,
-                                          uint8_t *mixed_retry_count);
+                                          uint8_t *runtime_monitor_enable);
 static uint8_t app_ocxo_cal_write_flash(uint8_t update_ocxo_state);
 static void app_ocxo_cal_log(const char *text, uint32_t value);
 
@@ -196,24 +145,15 @@ static uint32_t app_ocxo_cal_crc_bytes(const void *record, uint32_t crc_offset)
 }
 
 /* 解码 OCXO Flash 记录；V1 只含电压，自动任务开关使用默认值。 */
-static uint8_t app_ocxo_cal_decode_record(const app_ocxo_cal_flash_record_v6_t *record,
+static uint8_t app_ocxo_cal_decode_record(const app_ocxo_cal_flash_record_v4_t *record,
                                           uint32_t *dac_mv,
                                           uint8_t *auto_task_enable,
                                           uint8_t *boot_anim_enable,
-                                          uint8_t *runtime_monitor_enable,
-                                          uint8_t *ask_analog_demod_enable,
-                                          uint8_t *fsk_analog_demod_enable,
-                                          uint8_t *beep_ui_enable,
-                                          uint8_t *beep_sweep_lock_enable,
-                                          uint8_t *beep_analyze_done_enable,
-                                          uint8_t *beep_demod_start_enable,
-                                          uint8_t *mixed_retry_count)
+                                          uint8_t *runtime_monitor_enable)
 {
     const app_ocxo_cal_flash_record_v1_t *record_v1;
     const app_ocxo_cal_flash_record_v2_t *record_v2;
     const app_ocxo_cal_flash_record_v3_t *record_v3;
-    const app_ocxo_cal_flash_record_v4_t *record_v4;
-    const app_ocxo_cal_flash_record_v5_t *record_v5;
 
     if (record == NULL)
     {
@@ -223,47 +163,6 @@ static uint8_t app_ocxo_cal_decode_record(const app_ocxo_cal_flash_record_v6_t *
     if (record->magic != APP_OCXO_CAL_FLASH_MAGIC)
     {
         return 0U;
-    }
-
-    if (auto_task_enable != NULL)
-    {
-        *auto_task_enable = APP_OCXO_CAL_AUTO_TASK_DEFAULT_ENABLE;
-    }
-    if (boot_anim_enable != NULL)
-    {
-        *boot_anim_enable = APP_OCXO_CAL_BOOT_ANIM_DEFAULT_ENABLE;
-    }
-    if (runtime_monitor_enable != NULL)
-    {
-        *runtime_monitor_enable = APP_OCXO_CAL_RUNTIME_MONITOR_DEFAULT_ENABLE;
-    }
-    if (ask_analog_demod_enable != NULL)
-    {
-        *ask_analog_demod_enable = APP_OCXO_CAL_ASK_ANALOG_DEMOD_DEFAULT_ENABLE;
-    }
-    if (fsk_analog_demod_enable != NULL)
-    {
-        *fsk_analog_demod_enable = APP_OCXO_CAL_FSK_ANALOG_DEMOD_DEFAULT_ENABLE;
-    }
-    if (beep_ui_enable != NULL)
-    {
-        *beep_ui_enable = APP_OCXO_CAL_BEEP_UI_DEFAULT_ENABLE;
-    }
-    if (beep_sweep_lock_enable != NULL)
-    {
-        *beep_sweep_lock_enable = APP_OCXO_CAL_BEEP_SWEEP_LOCK_DEFAULT_ENABLE;
-    }
-    if (beep_analyze_done_enable != NULL)
-    {
-        *beep_analyze_done_enable = APP_OCXO_CAL_BEEP_ANALYZE_DONE_DEFAULT_ENABLE;
-    }
-    if (beep_demod_start_enable != NULL)
-    {
-        *beep_demod_start_enable = APP_OCXO_CAL_BEEP_DEMOD_START_DEFAULT_ENABLE;
-    }
-    if (mixed_retry_count != NULL)
-    {
-        *mixed_retry_count = APP_OCXO_CAL_MIXED_RETRY_DEFAULT_COUNT;
     }
 
     record_v1 = (const app_ocxo_cal_flash_record_v1_t *)record;
@@ -356,101 +255,11 @@ static uint8_t app_ocxo_cal_decode_record(const app_ocxo_cal_flash_record_v6_t *
         return 1U;
     }
 
-    record_v4 = (const app_ocxo_cal_flash_record_v4_t *)record;
-    if ((record_v4->version == 4UL) &&
-        (record_v4->record_size == sizeof(app_ocxo_cal_flash_record_v4_t)) &&
-        (record_v4->dac_mv >= APP_OCXO_CAL_MIN_MV) &&
-        (record_v4->dac_mv <= APP_OCXO_CAL_MAX_MV) &&
-        (record_v4->crc == app_ocxo_cal_crc_bytes(record_v4, offsetof(app_ocxo_cal_flash_record_v4_t, crc))))
-    {
-        if (dac_mv != NULL)
-        {
-            *dac_mv = record_v4->dac_mv;
-        }
-
-        if (auto_task_enable != NULL)
-        {
-            *auto_task_enable = (record_v4->auto_task_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (boot_anim_enable != NULL)
-        {
-            *boot_anim_enable = (record_v4->boot_anim_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (runtime_monitor_enable != NULL)
-        {
-            *runtime_monitor_enable = (record_v4->runtime_monitor_enable != 0UL) ? 1U : 0U;
-        }
-
-        return 1U;
-    }
-
-    record_v5 = (const app_ocxo_cal_flash_record_v5_t *)record;
-    if ((record_v5->version == 5UL) &&
-        (record_v5->record_size == sizeof(app_ocxo_cal_flash_record_v5_t)) &&
-        (record_v5->dac_mv >= APP_OCXO_CAL_MIN_MV) &&
-        (record_v5->dac_mv <= APP_OCXO_CAL_MAX_MV) &&
-        (record_v5->crc == app_ocxo_cal_crc_bytes(record_v5, offsetof(app_ocxo_cal_flash_record_v5_t, crc))))
-    {
-        if (dac_mv != NULL)
-        {
-            *dac_mv = record_v5->dac_mv;
-        }
-
-        if (auto_task_enable != NULL)
-        {
-            *auto_task_enable = (record_v5->auto_task_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (boot_anim_enable != NULL)
-        {
-            *boot_anim_enable = (record_v5->boot_anim_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (runtime_monitor_enable != NULL)
-        {
-            *runtime_monitor_enable = (record_v5->runtime_monitor_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (ask_analog_demod_enable != NULL)
-        {
-            *ask_analog_demod_enable = (record_v5->ask_analog_demod_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (fsk_analog_demod_enable != NULL)
-        {
-            *fsk_analog_demod_enable = (record_v5->fsk_analog_demod_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (beep_ui_enable != NULL)
-        {
-            *beep_ui_enable = (record_v5->beep_ui_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (beep_sweep_lock_enable != NULL)
-        {
-            *beep_sweep_lock_enable = (record_v5->beep_sweep_lock_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (beep_analyze_done_enable != NULL)
-        {
-            *beep_analyze_done_enable = (record_v5->beep_analyze_done_enable != 0UL) ? 1U : 0U;
-        }
-
-        if (beep_demod_start_enable != NULL)
-        {
-            *beep_demod_start_enable = (record_v5->beep_demod_start_enable != 0UL) ? 1U : 0U;
-        }
-
-        return 1U;
-    }
-
     if ((record->version != APP_OCXO_CAL_FLASH_VERSION) ||
-        (record->record_size != sizeof(app_ocxo_cal_flash_record_v6_t)) ||
+        (record->record_size != sizeof(app_ocxo_cal_flash_record_v4_t)) ||
         (record->dac_mv < APP_OCXO_CAL_MIN_MV) ||
         (record->dac_mv > APP_OCXO_CAL_MAX_MV) ||
-        (record->crc != app_ocxo_cal_crc_bytes(record, offsetof(app_ocxo_cal_flash_record_v6_t, crc))))
+        (record->crc != app_ocxo_cal_crc_bytes(record, offsetof(app_ocxo_cal_flash_record_v4_t, crc))))
     {
         return 0U;
     }
@@ -473,52 +282,6 @@ static uint8_t app_ocxo_cal_decode_record(const app_ocxo_cal_flash_record_v6_t *
     if (runtime_monitor_enable != NULL)
     {
         *runtime_monitor_enable = (record->runtime_monitor_enable != 0UL) ? 1U : 0U;
-    }
-
-    if (ask_analog_demod_enable != NULL)
-    {
-        *ask_analog_demod_enable = (record->ask_analog_demod_enable != 0UL) ? 1U : 0U;
-    }
-
-    if (fsk_analog_demod_enable != NULL)
-    {
-        *fsk_analog_demod_enable = (record->fsk_analog_demod_enable != 0UL) ? 1U : 0U;
-    }
-
-    if (beep_ui_enable != NULL)
-    {
-        *beep_ui_enable = (record->beep_ui_enable != 0UL) ? 1U : 0U;
-    }
-
-    if (beep_sweep_lock_enable != NULL)
-    {
-        *beep_sweep_lock_enable = (record->beep_sweep_lock_enable != 0UL) ? 1U : 0U;
-    }
-
-    if (beep_analyze_done_enable != NULL)
-    {
-        *beep_analyze_done_enable = (record->beep_analyze_done_enable != 0UL) ? 1U : 0U;
-    }
-
-    if (beep_demod_start_enable != NULL)
-    {
-        *beep_demod_start_enable = (record->beep_demod_start_enable != 0UL) ? 1U : 0U;
-    }
-
-    if (mixed_retry_count != NULL)
-    {
-        if (record->mixed_retry_count == APP_OCXO_CAL_MIXED_RETRY_INFINITE)
-        {
-            *mixed_retry_count = APP_OCXO_CAL_MIXED_RETRY_INFINITE;
-        }
-        else if (record->mixed_retry_count > APP_OCXO_CAL_MIXED_RETRY_MAX_COUNT)
-        {
-            *mixed_retry_count = APP_OCXO_CAL_MIXED_RETRY_DEFAULT_COUNT;
-        }
-        else
-        {
-            *mixed_retry_count = (uint8_t)record->mixed_retry_count;
-        }
     }
 
     return 1U;
@@ -546,15 +309,8 @@ static uint8_t app_ocxo_cal_write_flash(uint8_t update_ocxo_state)
     g_ocxo_flash_record.auto_task_enable = (g_ocxo_status.auto_task_enable != 0U) ? 1UL : 0UL;
     g_ocxo_flash_record.boot_anim_enable = (g_ocxo_status.boot_anim_enable != 0U) ? 1UL : 0UL;
     g_ocxo_flash_record.runtime_monitor_enable = (g_ocxo_status.runtime_monitor_enable != 0U) ? 1UL : 0UL;
-    g_ocxo_flash_record.ask_analog_demod_enable = (g_ocxo_status.ask_analog_demod_enable != 0U) ? 1UL : 0UL;
-    g_ocxo_flash_record.fsk_analog_demod_enable = (g_ocxo_status.fsk_analog_demod_enable != 0U) ? 1UL : 0UL;
-    g_ocxo_flash_record.beep_ui_enable = (g_ocxo_status.beep_ui_enable != 0U) ? 1UL : 0UL;
-    g_ocxo_flash_record.beep_sweep_lock_enable = (g_ocxo_status.beep_sweep_lock_enable != 0U) ? 1UL : 0UL;
-    g_ocxo_flash_record.beep_analyze_done_enable = (g_ocxo_status.beep_analyze_done_enable != 0U) ? 1UL : 0UL;
-    g_ocxo_flash_record.beep_demod_start_enable = (g_ocxo_status.beep_demod_start_enable != 0U) ? 1UL : 0UL;
-    g_ocxo_flash_record.mixed_retry_count = (uint32_t)g_ocxo_status.mixed_retry_count;
     g_ocxo_flash_record.crc = app_ocxo_cal_crc_bytes(&g_ocxo_flash_record,
-                                                     offsetof(app_ocxo_cal_flash_record_v6_t, crc));
+                                                     offsetof(app_ocxo_cal_flash_record_v4_t, crc));
 
     result = app_board_flash_erase_4k(APP_OCXO_CAL_FLASH_ADDR);
     if (result != APP_BOARD_FLASH_OK)
@@ -591,7 +347,7 @@ static uint8_t app_ocxo_cal_write_flash(uint8_t update_ocxo_state)
                                   (uint8_t *)&g_ocxo_flash_record,
                                   sizeof(g_ocxo_flash_record));
     if ((result != APP_BOARD_FLASH_OK) ||
-        (app_ocxo_cal_decode_record(&g_ocxo_flash_record, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL) == 0U))
+        (app_ocxo_cal_decode_record(&g_ocxo_flash_record, NULL, NULL, NULL, NULL) == 0U))
     {
         if (update_ocxo_state != 0U)
         {
@@ -662,13 +418,6 @@ void app_ocxo_cal_init(void)
     g_ocxo_status.auto_task_enable = APP_OCXO_CAL_AUTO_TASK_DEFAULT_ENABLE;
     g_ocxo_status.boot_anim_enable = APP_OCXO_CAL_BOOT_ANIM_DEFAULT_ENABLE;
     g_ocxo_status.runtime_monitor_enable = APP_OCXO_CAL_RUNTIME_MONITOR_DEFAULT_ENABLE;
-    g_ocxo_status.ask_analog_demod_enable = APP_OCXO_CAL_ASK_ANALOG_DEMOD_DEFAULT_ENABLE;
-    g_ocxo_status.fsk_analog_demod_enable = APP_OCXO_CAL_FSK_ANALOG_DEMOD_DEFAULT_ENABLE;
-    g_ocxo_status.beep_ui_enable = APP_OCXO_CAL_BEEP_UI_DEFAULT_ENABLE;
-    g_ocxo_status.beep_sweep_lock_enable = APP_OCXO_CAL_BEEP_SWEEP_LOCK_DEFAULT_ENABLE;
-    g_ocxo_status.beep_analyze_done_enable = APP_OCXO_CAL_BEEP_ANALYZE_DONE_DEFAULT_ENABLE;
-    g_ocxo_status.beep_demod_start_enable = APP_OCXO_CAL_BEEP_DEMOD_START_DEFAULT_ENABLE;
-    g_ocxo_status.mixed_retry_count = APP_OCXO_CAL_MIXED_RETRY_DEFAULT_COUNT;
     g_ocxo_saved_mv = APP_OCXO_CAL_DEFAULT_MV;
     g_ocxo_initialized = 1U;
     app_ocxo_cal_apply_dac(g_ocxo_status.dac_mv);
@@ -682,13 +431,6 @@ uint8_t app_ocxo_cal_load_from_flash(void)
     uint8_t auto_task_enable;
     uint8_t boot_anim_enable;
     uint8_t runtime_monitor_enable;
-    uint8_t ask_analog_demod_enable;
-    uint8_t fsk_analog_demod_enable;
-    uint8_t beep_ui_enable;
-    uint8_t beep_sweep_lock_enable;
-    uint8_t beep_analyze_done_enable;
-    uint8_t beep_demod_start_enable;
-    uint8_t mixed_retry_count;
 
     if (g_ocxo_initialized == 0U)
     {
@@ -703,14 +445,7 @@ uint8_t app_ocxo_cal_load_from_flash(void)
                                     &dac_mv,
                                     &auto_task_enable,
                                     &boot_anim_enable,
-                                    &runtime_monitor_enable,
-                                    &ask_analog_demod_enable,
-                                    &fsk_analog_demod_enable,
-                                    &beep_ui_enable,
-                                    &beep_sweep_lock_enable,
-                                    &beep_analyze_done_enable,
-                                    &beep_demod_start_enable,
-                                    &mixed_retry_count) == 0U))
+                                    &runtime_monitor_enable) == 0U))
     {
         g_ocxo_status.state = APP_OCXO_CAL_NONE;
         g_ocxo_status.valid = 0U;
@@ -718,13 +453,6 @@ uint8_t app_ocxo_cal_load_from_flash(void)
         g_ocxo_status.auto_task_enable = APP_OCXO_CAL_AUTO_TASK_DEFAULT_ENABLE;
         g_ocxo_status.boot_anim_enable = APP_OCXO_CAL_BOOT_ANIM_DEFAULT_ENABLE;
         g_ocxo_status.runtime_monitor_enable = APP_OCXO_CAL_RUNTIME_MONITOR_DEFAULT_ENABLE;
-        g_ocxo_status.ask_analog_demod_enable = APP_OCXO_CAL_ASK_ANALOG_DEMOD_DEFAULT_ENABLE;
-        g_ocxo_status.fsk_analog_demod_enable = APP_OCXO_CAL_FSK_ANALOG_DEMOD_DEFAULT_ENABLE;
-        g_ocxo_status.beep_ui_enable = APP_OCXO_CAL_BEEP_UI_DEFAULT_ENABLE;
-        g_ocxo_status.beep_sweep_lock_enable = APP_OCXO_CAL_BEEP_SWEEP_LOCK_DEFAULT_ENABLE;
-        g_ocxo_status.beep_analyze_done_enable = APP_OCXO_CAL_BEEP_ANALYZE_DONE_DEFAULT_ENABLE;
-        g_ocxo_status.beep_demod_start_enable = APP_OCXO_CAL_BEEP_DEMOD_START_DEFAULT_ENABLE;
-        g_ocxo_status.mixed_retry_count = APP_OCXO_CAL_MIXED_RETRY_DEFAULT_COUNT;
         g_ocxo_saved_mv = APP_OCXO_CAL_DEFAULT_MV;
         app_ocxo_cal_apply_dac(g_ocxo_status.dac_mv);
         return 0U;
@@ -734,13 +462,6 @@ uint8_t app_ocxo_cal_load_from_flash(void)
     g_ocxo_status.auto_task_enable = auto_task_enable;
     g_ocxo_status.boot_anim_enable = boot_anim_enable;
     g_ocxo_status.runtime_monitor_enable = runtime_monitor_enable;
-    g_ocxo_status.ask_analog_demod_enable = ask_analog_demod_enable;
-    g_ocxo_status.fsk_analog_demod_enable = fsk_analog_demod_enable;
-    g_ocxo_status.beep_ui_enable = beep_ui_enable;
-    g_ocxo_status.beep_sweep_lock_enable = beep_sweep_lock_enable;
-    g_ocxo_status.beep_analyze_done_enable = beep_analyze_done_enable;
-    g_ocxo_status.beep_demod_start_enable = beep_demod_start_enable;
-    g_ocxo_status.mixed_retry_count = mixed_retry_count;
     g_ocxo_status.state = APP_OCXO_CAL_HISTORY;
     g_ocxo_status.valid = 1U;
     g_ocxo_status.flash_loaded = 1U;
@@ -901,121 +622,5 @@ uint8_t app_ocxo_cal_set_runtime_monitor_enable(uint8_t enable)
     }
 
     app_ocxo_cal_log("runtime_monitor", g_ocxo_status.runtime_monitor_enable);
-    return 1U;
-}
-
-/* 保存普通功能开关；这些设置与 OCXO 电压共用同一条 Flash 配置记录。 */
-static uint8_t app_ocxo_cal_set_flag(uint8_t *field, uint8_t enable, const char *name)
-{
-    uint32_t value;
-
-    if ((field == NULL) || (name == NULL))
-    {
-        return 0U;
-    }
-
-    *field = (enable != 0U) ? 1U : 0U;
-    value = (uint32_t)(*field);
-    if (app_ocxo_cal_write_flash(0U) == 0U)
-    {
-        app_ocxo_cal_log(name, 0U);
-        return 0U;
-    }
-
-    app_ocxo_cal_log(name, value);
-    return 1U;
-}
-
-uint8_t app_ocxo_cal_get_ask_analog_demod_enable(void)
-{
-    return (g_ocxo_status.ask_analog_demod_enable != 0U) ? 1U : 0U;
-}
-
-uint8_t app_ocxo_cal_set_ask_analog_demod_enable(uint8_t enable)
-{
-    return app_ocxo_cal_set_flag(&g_ocxo_status.ask_analog_demod_enable, enable, "ask_analog_demod");
-}
-
-uint8_t app_ocxo_cal_get_fsk_analog_demod_enable(void)
-{
-    return (g_ocxo_status.fsk_analog_demod_enable != 0U) ? 1U : 0U;
-}
-
-uint8_t app_ocxo_cal_set_fsk_analog_demod_enable(uint8_t enable)
-{
-    return app_ocxo_cal_set_flag(&g_ocxo_status.fsk_analog_demod_enable, enable, "fsk_analog_demod");
-}
-
-uint8_t app_ocxo_cal_get_beep_ui_enable(void)
-{
-    return (g_ocxo_status.beep_ui_enable != 0U) ? 1U : 0U;
-}
-
-uint8_t app_ocxo_cal_set_beep_ui_enable(uint8_t enable)
-{
-    return app_ocxo_cal_set_flag(&g_ocxo_status.beep_ui_enable, enable, "beep_ui");
-}
-
-uint8_t app_ocxo_cal_get_beep_sweep_lock_enable(void)
-{
-    return (g_ocxo_status.beep_sweep_lock_enable != 0U) ? 1U : 0U;
-}
-
-uint8_t app_ocxo_cal_set_beep_sweep_lock_enable(uint8_t enable)
-{
-    return app_ocxo_cal_set_flag(&g_ocxo_status.beep_sweep_lock_enable, enable, "beep_sweep");
-}
-
-uint8_t app_ocxo_cal_get_beep_analyze_done_enable(void)
-{
-    return (g_ocxo_status.beep_analyze_done_enable != 0U) ? 1U : 0U;
-}
-
-uint8_t app_ocxo_cal_set_beep_analyze_done_enable(uint8_t enable)
-{
-    return app_ocxo_cal_set_flag(&g_ocxo_status.beep_analyze_done_enable, enable, "beep_analyze");
-}
-
-uint8_t app_ocxo_cal_get_beep_demod_start_enable(void)
-{
-    return (g_ocxo_status.beep_demod_start_enable != 0U) ? 1U : 0U;
-}
-
-uint8_t app_ocxo_cal_set_beep_demod_start_enable(uint8_t enable)
-{
-    return app_ocxo_cal_set_flag(&g_ocxo_status.beep_demod_start_enable, enable, "beep_demod");
-}
-
-uint8_t app_ocxo_cal_get_mixed_retry_count(void)
-{
-    return g_ocxo_status.mixed_retry_count;
-}
-
-/* 设置页每按一次递增 MIXED 重分析次数：0->1->...->5->INF->0。 */
-uint8_t app_ocxo_cal_cycle_mixed_retry_count(void)
-{
-    uint8_t next_count;
-
-    if (g_ocxo_status.mixed_retry_count == APP_OCXO_CAL_MIXED_RETRY_INFINITE)
-    {
-        next_count = 0U;
-    }
-    else if (g_ocxo_status.mixed_retry_count >= APP_OCXO_CAL_MIXED_RETRY_MAX_COUNT)
-    {
-        next_count = APP_OCXO_CAL_MIXED_RETRY_INFINITE;
-    }
-    else
-    {
-        next_count = g_ocxo_status.mixed_retry_count + 1U;
-    }
-
-    g_ocxo_status.mixed_retry_count = next_count;
-    if (app_ocxo_cal_write_flash(0U) == 0U)
-    {
-        app_ocxo_cal_log("mixed_retry,save", 0U);
-        return 0U;
-    }
-
-    app_ocxo_cal_log("mixed_retry", (uint32_t)g_ocxo_status.mixed_retry_count);
     return 1U;
 }

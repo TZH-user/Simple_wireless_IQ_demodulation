@@ -16,10 +16,9 @@
 
 /* 默认输出计划集中放在任务层，后续切版本或切板级频点时只改这里即可。 */
 static const app_si5351_output_cfg_t g_app_si5351_default_plan[] = {
-    /* CH1/CH3 当前不参与主链路，默认写入计划但不打开输出。 */
-    {1U, 65000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, false},
+    {1U, 65000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
     {2U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
-    {3U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, false},
+    {3U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
 #if APP_SI5351_SELECTED_VARIANT == APP_SI5351_VARIANT_BASIC
     /* basic 版本不支持强制绑 PLLB，这里必须退回 AUTO。 */
     {0U, 20480000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},

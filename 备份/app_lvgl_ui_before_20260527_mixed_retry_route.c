@@ -72,8 +72,7 @@ typedef enum
   APP_UI_BEEP_UI_TOGGLE,
   APP_UI_BEEP_SWEEP_LOCK_TOGGLE,
   APP_UI_BEEP_ANALYZE_DONE_TOGGLE,
-  APP_UI_BEEP_DEMOD_START_TOGGLE,
-  APP_UI_MIXED_RETRY_CYCLE
+  APP_UI_BEEP_DEMOD_START_TOGGLE
 } app_ui_ocxo_action_t;
 
 typedef enum
@@ -122,8 +121,6 @@ typedef struct
   lv_obj_t *boot_anim_label;
   lv_obj_t *runtime_monitor_btn;
   lv_obj_t *runtime_monitor_label;
-  lv_obj_t *mixed_retry_btn;
-  lv_obj_t *mixed_retry_label;
   lv_obj_t *demod_setting_title;
   lv_obj_t *ask_demod_btn;
   lv_obj_t *ask_demod_label;
@@ -195,7 +192,6 @@ static uint8_t App_LvglUiShouldShowOcxoControls(const moddetect_task_stats_t *st
 static void App_LvglUiRefreshAutoTaskButton(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshBootAnimButton(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshRuntimeMonitorButton(const app_ocxo_cal_status_t *ocxo_status);
-static void App_LvglUiRefreshMixedRetryButton(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshDemodSettingButtons(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshBuzzerButtons(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshOcxoControls(const moddetect_task_stats_t *stats, const app_ocxo_cal_status_t *ocxo_status);
@@ -390,8 +386,6 @@ void App_LvglUiInit(void)
   g_ui.boot_anim_label = lv_obj_get_child(g_ui.boot_anim_btn, 0);
   g_ui.runtime_monitor_btn = App_LvglUiCreateOcxoButton(main_card, "MON OFF", UI_ACTION_X, 116, 110, APP_UI_RUNTIME_MONITOR_TOGGLE);
   g_ui.runtime_monitor_label = lv_obj_get_child(g_ui.runtime_monitor_btn, 0);
-  g_ui.mixed_retry_btn = App_LvglUiCreateOcxoButton(main_card, "MIX R3", UI_ACTION_X + 120, 116, 110, APP_UI_MIXED_RETRY_CYCLE);
-  g_ui.mixed_retry_label = lv_obj_get_child(g_ui.mixed_retry_btn, 0);
 
   g_ui.demod_setting_title = lv_label_create(main_card);
   lv_label_set_text(g_ui.demod_setting_title, "DEMOD");
@@ -473,7 +467,6 @@ void App_LvglUiRefresh(void)
   App_LvglUiRefreshAutoTaskButton(&ocxo_status);
   App_LvglUiRefreshBootAnimButton(&ocxo_status);
   App_LvglUiRefreshRuntimeMonitorButton(&ocxo_status);
-  App_LvglUiRefreshMixedRetryButton(&ocxo_status);
   App_LvglUiRefreshDemodSettingButtons(&ocxo_status);
   App_LvglUiRefreshBuzzerButtons(&ocxo_status);
   App_LvglUiRefreshOcxoControls(&st, &ocxo_status);
@@ -497,7 +490,7 @@ static void App_LvglUiSetStatus(app_ui_status_t status)
   switch (status)
   {
     case APP_UI_STATUS_DONE:
-      text = "ANALYZE OK";
+      text = "DONE";
       bg = lv_color_hex(0x22C55E);
       break;
 
@@ -699,27 +692,6 @@ static void App_LvglUiRefreshRuntimeMonitorButton(const app_ocxo_cal_status_t *o
   }
 }
 
-static void App_LvglUiRefreshMixedRetryButton(const app_ocxo_cal_status_t *ocxo_status)
-{
-  if ((g_ui.mixed_retry_btn == NULL) || (g_ui.mixed_retry_label == NULL) || (ocxo_status == NULL))
-  {
-    return;
-  }
-
-  if (ocxo_status->mixed_retry_count == APP_OCXO_CAL_MIXED_RETRY_INFINITE)
-  {
-    lv_label_set_text(g_ui.mixed_retry_label, "MIX INF");
-    lv_obj_set_style_bg_color(g_ui.mixed_retry_btn, lv_color_hex(0x16A34A), 0);
-  }
-  else
-  {
-    lv_label_set_text_fmt(g_ui.mixed_retry_label, "MIX R%u", (unsigned int)ocxo_status->mixed_retry_count);
-    lv_obj_set_style_bg_color(g_ui.mixed_retry_btn,
-                              (ocxo_status->mixed_retry_count != 0U) ? lv_color_hex(0x16A34A) : lv_color_hex(0x64748B),
-                              0);
-  }
-}
-
 static void App_LvglUiSetToggleButton(lv_obj_t *btn,
                                       lv_obj_t *label,
                                       uint8_t enabled,
@@ -826,7 +798,6 @@ static void App_LvglUiRefreshMenuVisibility(const moddetect_task_stats_t *stats)
   App_LvglUiSetOneHidden(g_ui.auto_task_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.boot_anim_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.runtime_monitor_btn, (show_settings == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.mixed_retry_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.demod_setting_title, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.ask_demod_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.fsk_demod_btn, (show_settings == 0U) ? 1U : 0U);
@@ -1054,12 +1025,6 @@ static void App_LvglUiRefreshOverallStatus(const moddetect_task_stats_t *stats, 
            (analyze_is_active() != 0U))
   {
     App_LvglUiSetHwStatus(g_ui.overall_status, "RUNNING", lv_color_hex(0xCA8A04));
-  }
-  else if ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_TASK) &&
-           (stats->result_ready != 0U) && (stats->center_hz != 0UL) &&
-           (analyze_is_done() != 0U))
-  {
-    App_LvglUiSetHwStatus(g_ui.overall_status, "ANALYZE OK", lv_color_hex(0x16A34A));
   }
   else if (si_ready == 0U)
   {
@@ -1321,12 +1286,6 @@ static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
     {
       uint8_t next_enable = (app_ocxo_cal_get_runtime_monitor_enable() == 0U) ? 1U : 0U;
       (void)app_ocxo_cal_set_runtime_monitor_enable(next_enable);
-      return;
-    }
-
-    if (action == APP_UI_MIXED_RETRY_CYCLE)
-    {
-      (void)app_ocxo_cal_cycle_mixed_retry_count();
       return;
     }
 

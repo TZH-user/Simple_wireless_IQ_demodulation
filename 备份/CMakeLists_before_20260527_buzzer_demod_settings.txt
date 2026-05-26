@@ -108,7 +108,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/BoardFlash/board_flash_qspi_port.c
     Core/App/BoardFlash/board_flash_w25q64.c
     Core/App/OCXO/app_ocxo_cal.c
-    Core/App/Buzzer/app_buzzer.c
 )
 
 # Add include paths
@@ -138,7 +137,6 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/DEMODE
     Core/App/BoardFlash
     Core/App/OCXO
-    Core/App/Buzzer
 
     Drivers/CMSIS/DSP/Include
 )

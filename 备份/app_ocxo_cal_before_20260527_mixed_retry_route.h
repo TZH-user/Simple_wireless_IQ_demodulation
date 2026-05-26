@@ -43,12 +43,6 @@ extern "C" {
 #define APP_OCXO_CAL_BEEP_ANALYZE_DONE_DEFAULT_ENABLE 0U
 /* 解调输出启动提示音默认关闭。 */
 #define APP_OCXO_CAL_BEEP_DEMOD_START_DEFAULT_ENABLE 0U
-/* MIXED 识别结果自动重分析默认次数；0=不重试，1~5=固定次数，255=一直重试。 */
-#define APP_OCXO_CAL_MIXED_RETRY_DEFAULT_COUNT 3U
-/* MIXED 自动重分析最多显示到 5 次，再按一次进入无限重试。 */
-#define APP_OCXO_CAL_MIXED_RETRY_MAX_COUNT 5U
-/* MIXED 自动重分析无限重试的内部编码，UI 显示为 INF。 */
-#define APP_OCXO_CAL_MIXED_RETRY_INFINITE 255U
 
 typedef enum
 {
@@ -77,7 +71,6 @@ typedef struct
     uint8_t beep_sweep_lock_enable;
     uint8_t beep_analyze_done_enable;
     uint8_t beep_demod_start_enable;
-    uint8_t mixed_retry_count;
 } app_ocxo_cal_status_t;
 
 void app_ocxo_cal_init(void);
@@ -107,8 +100,6 @@ uint8_t app_ocxo_cal_get_beep_analyze_done_enable(void);
 uint8_t app_ocxo_cal_set_beep_analyze_done_enable(uint8_t enable);
 uint8_t app_ocxo_cal_get_beep_demod_start_enable(void);
 uint8_t app_ocxo_cal_set_beep_demod_start_enable(uint8_t enable);
-uint8_t app_ocxo_cal_get_mixed_retry_count(void);
-uint8_t app_ocxo_cal_cycle_mixed_retry_count(void);
 
 #ifdef __cplusplus
 }

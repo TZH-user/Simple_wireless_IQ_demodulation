@@ -670,17 +670,14 @@ void StartModDetectTask(void *argument)
             {
                 continue;
             }
-            /* CW 没有基带信息需要输出，只停在分析结果；其它类型按设置自动进入解调。 */
+            /* Analyze 完成后默认停在识别结果；如需直通解调，打开 MODDETECT_AUTO_DEMOD_ENABLE。 */
 #if (MODDETECT_AUTO_DEMOD_ENABLE != 0U)
             if (demod_triggered == 0U)
             {
                 if (result.done != 0U)
                 {
                     app_buzzer_notify_analyze_done();
-                    if (result.mode != ANALYZE_MODE_CW)
-                    {
-                        demod_task_start_with_result(&result);
-                    }
+                    demod_task_start_with_result(&result);
                     demod_triggered = 1U;
                 }
             }

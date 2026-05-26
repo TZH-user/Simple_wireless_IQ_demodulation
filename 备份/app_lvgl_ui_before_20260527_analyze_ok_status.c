@@ -497,7 +497,7 @@ static void App_LvglUiSetStatus(app_ui_status_t status)
   switch (status)
   {
     case APP_UI_STATUS_DONE:
-      text = "ANALYZE OK";
+      text = "DONE";
       bg = lv_color_hex(0x22C55E);
       break;
 
@@ -1054,12 +1054,6 @@ static void App_LvglUiRefreshOverallStatus(const moddetect_task_stats_t *stats, 
            (analyze_is_active() != 0U))
   {
     App_LvglUiSetHwStatus(g_ui.overall_status, "RUNNING", lv_color_hex(0xCA8A04));
-  }
-  else if ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_TASK) &&
-           (stats->result_ready != 0U) && (stats->center_hz != 0UL) &&
-           (analyze_is_done() != 0U))
-  {
-    App_LvglUiSetHwStatus(g_ui.overall_status, "ANALYZE OK", lv_color_hex(0x16A34A));
   }
   else if (si_ready == 0U)
   {

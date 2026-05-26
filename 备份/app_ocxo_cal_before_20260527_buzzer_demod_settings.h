@@ -31,24 +31,6 @@ extern "C" {
 #define APP_OCXO_CAL_BOOT_ANIM_DEFAULT_ENABLE 1U
 /* 运行中切频/切调制监测默认关闭；在 SET 菜单打开后写入 Flash 并立即生效。 */
 #define APP_OCXO_CAL_RUNTIME_MONITOR_DEFAULT_ENABLE 0U
-/* ASK 普通=ASK 数字解调；增强=改走 AM 包络解调，适合先验证示波器输出。 */
-#define APP_OCXO_CAL_ASK_ANALOG_DEMOD_DEFAULT_ENABLE 0U
-/* FSK 普通=FSK 数字判决；增强=改走 FM 频率解调，适合先验证模拟波形。 */
-#define APP_OCXO_CAL_FSK_ANALOG_DEMOD_DEFAULT_ENABLE 0U
-/* 屏幕按键蜂鸣默认关闭；打开后每次触摸按钮会短响。 */
-#define APP_OCXO_CAL_BEEP_UI_DEFAULT_ENABLE 0U
-/* 扫频锁定提示音默认关闭。 */
-#define APP_OCXO_CAL_BEEP_SWEEP_LOCK_DEFAULT_ENABLE 0U
-/* 识别完成提示音默认关闭。 */
-#define APP_OCXO_CAL_BEEP_ANALYZE_DONE_DEFAULT_ENABLE 0U
-/* 解调输出启动提示音默认关闭。 */
-#define APP_OCXO_CAL_BEEP_DEMOD_START_DEFAULT_ENABLE 0U
-/* MIXED 识别结果自动重分析默认次数；0=不重试，1~5=固定次数，255=一直重试。 */
-#define APP_OCXO_CAL_MIXED_RETRY_DEFAULT_COUNT 3U
-/* MIXED 自动重分析最多显示到 5 次，再按一次进入无限重试。 */
-#define APP_OCXO_CAL_MIXED_RETRY_MAX_COUNT 5U
-/* MIXED 自动重分析无限重试的内部编码，UI 显示为 INF。 */
-#define APP_OCXO_CAL_MIXED_RETRY_INFINITE 255U
 
 typedef enum
 {
@@ -71,13 +53,6 @@ typedef struct
     uint8_t auto_task_enable;
     uint8_t boot_anim_enable;
     uint8_t runtime_monitor_enable;
-    uint8_t ask_analog_demod_enable;
-    uint8_t fsk_analog_demod_enable;
-    uint8_t beep_ui_enable;
-    uint8_t beep_sweep_lock_enable;
-    uint8_t beep_analyze_done_enable;
-    uint8_t beep_demod_start_enable;
-    uint8_t mixed_retry_count;
 } app_ocxo_cal_status_t;
 
 void app_ocxo_cal_init(void);
@@ -95,20 +70,6 @@ uint8_t app_ocxo_cal_get_boot_anim_enable(void);
 uint8_t app_ocxo_cal_set_boot_anim_enable(uint8_t enable);
 uint8_t app_ocxo_cal_get_runtime_monitor_enable(void);
 uint8_t app_ocxo_cal_set_runtime_monitor_enable(uint8_t enable);
-uint8_t app_ocxo_cal_get_ask_analog_demod_enable(void);
-uint8_t app_ocxo_cal_set_ask_analog_demod_enable(uint8_t enable);
-uint8_t app_ocxo_cal_get_fsk_analog_demod_enable(void);
-uint8_t app_ocxo_cal_set_fsk_analog_demod_enable(uint8_t enable);
-uint8_t app_ocxo_cal_get_beep_ui_enable(void);
-uint8_t app_ocxo_cal_set_beep_ui_enable(uint8_t enable);
-uint8_t app_ocxo_cal_get_beep_sweep_lock_enable(void);
-uint8_t app_ocxo_cal_set_beep_sweep_lock_enable(uint8_t enable);
-uint8_t app_ocxo_cal_get_beep_analyze_done_enable(void);
-uint8_t app_ocxo_cal_set_beep_analyze_done_enable(uint8_t enable);
-uint8_t app_ocxo_cal_get_beep_demod_start_enable(void);
-uint8_t app_ocxo_cal_set_beep_demod_start_enable(uint8_t enable);
-uint8_t app_ocxo_cal_get_mixed_retry_count(void);
-uint8_t app_ocxo_cal_cycle_mixed_retry_count(void);
 
 #ifdef __cplusplus
 }

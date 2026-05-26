@@ -175,33 +175,17 @@ void APP_AD9959_SetQuadPhaseDeg(uint32_t freq_hz, uint16_t amp)
  *
  * 当前默认策略：
  * - 先完成 AD9959 基础初始化
- * - 4 路都写入默认频率和相位，保证运行时可随时接管
- * - 只有 CH0 使用默认幅度，CH1~CH3 上电幅度为 0，不默认输出
+ * - 再把 4 路配置成 100 kHz
+ * - 幅度统一为 1023
+ * - 相位统一设为 0/90/180/270 度
+ *
+ * 这相当于“项目上电默认配置”。
+ * 后面如果你想改默认频率、默认相位或默认幅度，优先改这里，而不是直接改 main.c。
  */
 void APP_AD9959_InitDefault4Ch(void)
 {
-  AppAd9959BatchConfig cfg;
-
   AD9959_Init();
-
-  APP_AD9959_BuildKeepConfig(&cfg);
-
-  cfg.freq_hz[0] = APP_AD9959_DEFAULT_FREQ_HZ;
-  cfg.freq_hz[1] = APP_AD9959_DEFAULT_FREQ_HZ;
-  cfg.freq_hz[2] = APP_AD9959_DEFAULT_FREQ_HZ;
-  cfg.freq_hz[3] = APP_AD9959_DEFAULT_FREQ_HZ;
-
-  cfg.amp_code[0] = APP_AD9959_STARTUP_CH0_AMP_CODE;
-  cfg.amp_code[1] = APP_AD9959_STARTUP_CH1_AMP_CODE;
-  cfg.amp_code[2] = APP_AD9959_STARTUP_CH2_AMP_CODE;
-  cfg.amp_code[3] = APP_AD9959_STARTUP_CH3_AMP_CODE;
-
-  cfg.phase_deg[0] = APP_AD9959_DEFAULT_PHASE_CH0;
-  cfg.phase_deg[1] = APP_AD9959_DEFAULT_PHASE_CH1;
-  cfg.phase_deg[2] = APP_AD9959_DEFAULT_PHASE_CH2;
-  cfg.phase_deg[3] = APP_AD9959_DEFAULT_PHASE_CH3;
-
-  APP_AD9959_ApplyBatchConfig(&cfg);
+  APP_AD9959_SetQuadPhaseDeg(APP_AD9959_DEFAULT_FREQ_HZ, APP_AD9959_STARTUP_AMP_CODE);
 }
 
 /* 把 4 个通道统一设置为相同频率。
