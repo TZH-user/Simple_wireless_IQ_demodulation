@@ -1,0 +1,97 @@
+#include "Types/RtosTypes.h"
+#include "cmsis_os2.h"
+#include "main.h"
+#include "FreeRTOS.h"
+#include "usart.h"
+#include "string.h"
+#include <stdio.h>
+
+#define PRINTF_FW_ID_PRODUCT          "moddet_tune_20260506"
+#define PRINTF_FW_ID_BUILD            "20260506_0957"
+#define PRINTF_FW_ID_FEATURE_ASK      "strong_env"
+#define PRINTF_FW_ID_FEATURE_PSK      "sign75_freq220"
+#define PRINTF_FW_ID_REPEAT_COUNT     4U
+#define PRINTF_FW_ID_REPEAT_PERIOD_MS 500U
+#define PRINTF_TASK_QUEUE_WAIT_MS     100U
+
+volatile uart_mode_t g_uart_mode = UART_MODE_LOG;  //全局变量，表示当前串口打印模式，默认�?LOG 模式
+
+static void printf_task_emit_fw_id(void)
+{
+    if (g_uart_mode != UART_MODE_LOG)
+    {
+        return;
+    }
+
+    char line[128];
+    int n = snprintf(line,
+                     sizeof(line),
+                     "fw_id,%s,build=%s,ask=%s,psk=%s\r\n",
+                     PRINTF_FW_ID_PRODUCT,
+                     PRINTF_FW_ID_BUILD,
+                     PRINTF_FW_ID_FEATURE_ASK,
+                     PRINTF_FW_ID_FEATURE_PSK);
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+        HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)n, HAL_MAX_DELAY);
+    }
+}
+
+// 这个文件实现了一个专门的打印任务（PrintfTask），它从一个消息队列（PrintQueue）中获取要打印的数据�?
+// 并根据当前的打印模式（g_uart_mode）决定是否通过 UART 发送这些数据。这样做的好处是可以在不同的任务中发送不同类型的日志或数据，而不需要担心它们之间的冲突�?
+static void print_queue_send_typed(const char *text, print_kind_t kind)
+{
+    print_msg_t msg;
+    size_t len = strlen(text);
+
+    if (len > sizeof(msg.data))
+    {
+        len = sizeof(msg.data);
+    }
+
+    memcpy(msg.data, text, len);
+    msg.len = (uint16_t)len;
+    msg.kind = (uint8_t)kind;
+
+    osMessageQueuePut(PrintQueueHandle, &msg, 0U, osWaitForever);
+}
+//提供两个封装函数，分别用于发�?VOFA 数据和日志数据，这样调用者就不需要关心打印类型的细节了�?
+void print_queue_send_vofa(const char *text)
+{
+    print_queue_send_typed(text, PRINT_KIND_VOFA);
+}
+//这个函数是专门用于发送日志数据的封装函数，调用者只需要传入要打印的文本，它会自动标记为日志类型并发送到消息队列�?
+void print_queue_send_log(const char *text)
+{
+    print_queue_send_typed(text, PRINT_KIND_LOG);
+}
+// 这个函数�?FreeRTOS 任务的入口函数，负责从消息队列中获取要打印的数据，并根据当前的打印模式决定是否通过 UART 发送这些数据�?
+void StartPrintfTask(void *argument)
+{
+    print_msg_t msg;
+    uint32_t fw_id_repeat_left = PRINTF_FW_ID_REPEAT_COUNT;
+    uint32_t next_fw_id_tick = osKernelGetTickCount();
+    (void)argument;
+
+    for (;;)
+    {
+        uint32_t now_tick = osKernelGetTickCount();
+
+        if ((fw_id_repeat_left > 0U) &&
+            ((int32_t)(now_tick - next_fw_id_tick) >= 0))
+        {
+            printf_task_emit_fw_id();
+            fw_id_repeat_left--;
+            next_fw_id_tick = now_tick + PRINTF_FW_ID_REPEAT_PERIOD_MS;
+        }
+
+        if (osMessageQueueGet(PrintQueueHandle, &msg, NULL, PRINTF_TASK_QUEUE_WAIT_MS) == osOK)
+        {
+            if ((g_uart_mode == UART_MODE_VOFA && msg.kind == PRINT_KIND_VOFA) ||
+                (g_uart_mode == UART_MODE_LOG  && msg.kind == PRINT_KIND_LOG))
+            {
+                HAL_UART_Transmit(&huart1, (uint8_t *)msg.data, msg.len, HAL_MAX_DELAY);
+            }
+        }
+    }
+}

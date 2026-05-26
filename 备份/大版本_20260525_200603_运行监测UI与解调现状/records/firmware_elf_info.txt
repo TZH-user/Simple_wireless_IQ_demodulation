@@ -1,0 +1,8 @@
+﻿
+
+FullName      : D:\VSCodeCMAKEProject\Simple_wireless_IQ_demodulation\build\Debug\Simple_wireless_IQ_demodulation.elf
+Length        : 7810884
+LastWriteTime : 2026/5/25 19:27:08
+
+
+

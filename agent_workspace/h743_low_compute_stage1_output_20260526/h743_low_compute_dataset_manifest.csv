@@ -1,0 +1,209 @@
+case_id,split,seed,modulation,profile,snr_db,low_if_hz,msg_freq_hz,am_depth,fm_deviation_hz,symbol_rate_hz,fsk_sep_hz,pattern,holdout_note
+1,train,2026052618,AM,ideal,Inf,-5000,5000,0.2,NaN,NaN,NaN,,training grid
+2,train,2026052635,AM,ideal,Inf,-5000,10000,0.5,NaN,NaN,NaN,,training grid
+3,train,2026052652,AM,ideal,Inf,-5000,15000,0.8,NaN,NaN,NaN,,training grid
+4,train,2026052669,FM,ideal,Inf,-5000,5000,NaN,25000,NaN,NaN,,training grid
+5,train,2026052686,FM,ideal,Inf,-5000,10000,NaN,75000,NaN,NaN,,training grid
+6,train,2026052703,FM,ideal,Inf,-5000,15000,NaN,100000,NaN,NaN,,training grid
+7,train,2026052720,ASK,ideal,Inf,-5000,NaN,NaN,NaN,5000,NaN,pn9,training grid
+8,train,2026052737,PSK,ideal,Inf,-5000,NaN,NaN,NaN,5000,NaN,pn9,training grid
+9,train,2026052754,ASK,ideal,Inf,-5000,NaN,NaN,NaN,5000,NaN,loop01,training grid
+10,train,2026052771,PSK,ideal,Inf,-5000,NaN,NaN,NaN,5000,NaN,loop01,training grid
+11,train,2026052788,ASK,ideal,Inf,-5000,NaN,NaN,NaN,10000,NaN,pn9,training grid
+12,train,2026052805,PSK,ideal,Inf,-5000,NaN,NaN,NaN,10000,NaN,pn9,training grid
+13,train,2026052822,ASK,ideal,Inf,-5000,NaN,NaN,NaN,10000,NaN,loop01,training grid
+14,train,2026052839,PSK,ideal,Inf,-5000,NaN,NaN,NaN,10000,NaN,loop01,training grid
+15,train,2026052856,ASK,ideal,Inf,-5000,NaN,NaN,NaN,20000,NaN,pn9,training grid
+16,train,2026052873,PSK,ideal,Inf,-5000,NaN,NaN,NaN,20000,NaN,pn9,training grid
+17,train,2026052890,ASK,ideal,Inf,-5000,NaN,NaN,NaN,20000,NaN,loop01,training grid
+18,train,2026052907,PSK,ideal,Inf,-5000,NaN,NaN,NaN,20000,NaN,loop01,training grid
+19,train,2026052924,ASK,ideal,Inf,-5000,NaN,NaN,NaN,40000,NaN,pn9,training grid
+20,train,2026052941,PSK,ideal,Inf,-5000,NaN,NaN,NaN,40000,NaN,pn9,training grid
+21,train,2026052958,ASK,ideal,Inf,-5000,NaN,NaN,NaN,40000,NaN,loop01,training grid
+22,train,2026052975,PSK,ideal,Inf,-5000,NaN,NaN,NaN,40000,NaN,loop01,training grid
+23,train,2026052992,FSK,ideal,Inf,-5000,NaN,NaN,NaN,5000,10000,pn9,training grid
+24,train,2026053009,FSK,ideal,Inf,-5000,NaN,NaN,NaN,5000,10000,loop01,training grid
+25,train,2026053026,FSK,ideal,Inf,-5000,NaN,NaN,NaN,10000,20000,pn9,training grid
+26,train,2026053043,FSK,ideal,Inf,-5000,NaN,NaN,NaN,10000,20000,loop01,training grid
+27,train,2026053060,FSK,ideal,Inf,-5000,NaN,NaN,NaN,20000,40000,pn9,training grid
+28,train,2026053077,FSK,ideal,Inf,-5000,NaN,NaN,NaN,20000,40000,loop01,training grid
+29,train,2026053094,FSK,ideal,Inf,-5000,NaN,NaN,NaN,40000,80000,pn9,training grid
+30,train,2026053111,FSK,ideal,Inf,-5000,NaN,NaN,NaN,40000,80000,loop01,training grid
+31,train,2026053128,AM,ideal,20,-5000,5000,0.2,NaN,NaN,NaN,,training grid
+32,train,2026053145,AM,ideal,20,-5000,10000,0.5,NaN,NaN,NaN,,training grid
+33,train,2026053162,AM,ideal,20,-5000,15000,0.8,NaN,NaN,NaN,,training grid
+34,train,2026053179,FM,ideal,20,-5000,5000,NaN,25000,NaN,NaN,,training grid
+35,train,2026053196,FM,ideal,20,-5000,10000,NaN,75000,NaN,NaN,,training grid
+36,train,2026053213,FM,ideal,20,-5000,15000,NaN,100000,NaN,NaN,,training grid
+37,train,2026053230,ASK,ideal,20,-5000,NaN,NaN,NaN,5000,NaN,pn9,training grid
+38,train,2026053247,PSK,ideal,20,-5000,NaN,NaN,NaN,5000,NaN,pn9,training grid
+39,train,2026053264,ASK,ideal,20,-5000,NaN,NaN,NaN,5000,NaN,loop01,training grid
+40,train,2026053281,PSK,ideal,20,-5000,NaN,NaN,NaN,5000,NaN,loop01,training grid
+41,train,2026053298,ASK,ideal,20,-5000,NaN,NaN,NaN,10000,NaN,pn9,training grid
+42,train,2026053315,PSK,ideal,20,-5000,NaN,NaN,NaN,10000,NaN,pn9,training grid
+43,train,2026053332,ASK,ideal,20,-5000,NaN,NaN,NaN,10000,NaN,loop01,training grid
+44,train,2026053349,PSK,ideal,20,-5000,NaN,NaN,NaN,10000,NaN,loop01,training grid
+45,train,2026053366,ASK,ideal,20,-5000,NaN,NaN,NaN,20000,NaN,pn9,training grid
+46,train,2026053383,PSK,ideal,20,-5000,NaN,NaN,NaN,20000,NaN,pn9,training grid
+47,train,2026053400,ASK,ideal,20,-5000,NaN,NaN,NaN,20000,NaN,loop01,training grid
+48,train,2026053417,PSK,ideal,20,-5000,NaN,NaN,NaN,20000,NaN,loop01,training grid
+49,train,2026053434,ASK,ideal,20,-5000,NaN,NaN,NaN,40000,NaN,pn9,training grid
+50,train,2026053451,PSK,ideal,20,-5000,NaN,NaN,NaN,40000,NaN,pn9,training grid
+51,train,2026053468,ASK,ideal,20,-5000,NaN,NaN,NaN,40000,NaN,loop01,training grid
+52,train,2026053485,PSK,ideal,20,-5000,NaN,NaN,NaN,40000,NaN,loop01,training grid
+53,train,2026053502,FSK,ideal,20,-5000,NaN,NaN,NaN,5000,10000,pn9,training grid
+54,train,2026053519,FSK,ideal,20,-5000,NaN,NaN,NaN,5000,10000,loop01,training grid
+55,train,2026053536,FSK,ideal,20,-5000,NaN,NaN,NaN,10000,20000,pn9,training grid
+56,train,2026053553,FSK,ideal,20,-5000,NaN,NaN,NaN,10000,20000,loop01,training grid
+57,train,2026053570,FSK,ideal,20,-5000,NaN,NaN,NaN,20000,40000,pn9,training grid
+58,train,2026053587,FSK,ideal,20,-5000,NaN,NaN,NaN,20000,40000,loop01,training grid
+59,train,2026053604,FSK,ideal,20,-5000,NaN,NaN,NaN,40000,80000,pn9,training grid
+60,train,2026053621,FSK,ideal,20,-5000,NaN,NaN,NaN,40000,80000,loop01,training grid
+61,train,2026053638,AM,board_like_normal,Inf,-5000,5000,0.2,NaN,NaN,NaN,,training grid
+62,train,2026053655,AM,board_like_normal,Inf,-5000,10000,0.5,NaN,NaN,NaN,,training grid
+63,train,2026053672,AM,board_like_normal,Inf,-5000,15000,0.8,NaN,NaN,NaN,,training grid
+64,train,2026053689,FM,board_like_normal,Inf,-5000,5000,NaN,25000,NaN,NaN,,training grid
+65,train,2026053706,FM,board_like_normal,Inf,-5000,10000,NaN,75000,NaN,NaN,,training grid
+66,train,2026053723,FM,board_like_normal,Inf,-5000,15000,NaN,100000,NaN,NaN,,training grid
+67,train,2026053740,ASK,board_like_normal,Inf,-5000,NaN,NaN,NaN,5000,NaN,pn9,training grid
+68,train,2026053757,PSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,5000,NaN,pn9,training grid
+69,train,2026053774,ASK,board_like_normal,Inf,-5000,NaN,NaN,NaN,5000,NaN,loop01,training grid
+70,train,2026053791,PSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,5000,NaN,loop01,training grid
+71,train,2026053808,ASK,board_like_normal,Inf,-5000,NaN,NaN,NaN,10000,NaN,pn9,training grid
+72,train,2026053825,PSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,10000,NaN,pn9,training grid
+73,train,2026053842,ASK,board_like_normal,Inf,-5000,NaN,NaN,NaN,10000,NaN,loop01,training grid
+74,train,2026053859,PSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,10000,NaN,loop01,training grid
+75,train,2026053876,ASK,board_like_normal,Inf,-5000,NaN,NaN,NaN,20000,NaN,pn9,training grid
+76,train,2026053893,PSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,20000,NaN,pn9,training grid
+77,train,2026053910,ASK,board_like_normal,Inf,-5000,NaN,NaN,NaN,20000,NaN,loop01,training grid
+78,train,2026053927,PSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,20000,NaN,loop01,training grid
+79,train,2026053944,ASK,board_like_normal,Inf,-5000,NaN,NaN,NaN,40000,NaN,pn9,training grid
+80,train,2026053961,PSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,40000,NaN,pn9,training grid
+81,train,2026053978,ASK,board_like_normal,Inf,-5000,NaN,NaN,NaN,40000,NaN,loop01,training grid
+82,train,2026053995,PSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,40000,NaN,loop01,training grid
+83,train,2026054012,FSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,5000,10000,pn9,training grid
+84,train,2026054029,FSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,5000,10000,loop01,training grid
+85,train,2026054046,FSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,10000,20000,pn9,training grid
+86,train,2026054063,FSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,10000,20000,loop01,training grid
+87,train,2026054080,FSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,20000,40000,pn9,training grid
+88,train,2026054097,FSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,20000,40000,loop01,training grid
+89,train,2026054114,FSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,40000,80000,pn9,training grid
+90,train,2026054131,FSK,board_like_normal,Inf,-5000,NaN,NaN,NaN,40000,80000,loop01,training grid
+91,train,2026054148,AM,board_like_normal,20,-5000,5000,0.2,NaN,NaN,NaN,,training grid
+92,train,2026054165,AM,board_like_normal,20,-5000,10000,0.5,NaN,NaN,NaN,,training grid
+93,train,2026054182,AM,board_like_normal,20,-5000,15000,0.8,NaN,NaN,NaN,,training grid
+94,train,2026054199,FM,board_like_normal,20,-5000,5000,NaN,25000,NaN,NaN,,training grid
+95,train,2026054216,FM,board_like_normal,20,-5000,10000,NaN,75000,NaN,NaN,,training grid
+96,train,2026054233,FM,board_like_normal,20,-5000,15000,NaN,100000,NaN,NaN,,training grid
+97,train,2026054250,ASK,board_like_normal,20,-5000,NaN,NaN,NaN,5000,NaN,pn9,training grid
+98,train,2026054267,PSK,board_like_normal,20,-5000,NaN,NaN,NaN,5000,NaN,pn9,training grid
+99,train,2026054284,ASK,board_like_normal,20,-5000,NaN,NaN,NaN,5000,NaN,loop01,training grid
+100,train,2026054301,PSK,board_like_normal,20,-5000,NaN,NaN,NaN,5000,NaN,loop01,training grid
+101,train,2026054318,ASK,board_like_normal,20,-5000,NaN,NaN,NaN,10000,NaN,pn9,training grid
+102,train,2026054335,PSK,board_like_normal,20,-5000,NaN,NaN,NaN,10000,NaN,pn9,training grid
+103,train,2026054352,ASK,board_like_normal,20,-5000,NaN,NaN,NaN,10000,NaN,loop01,training grid
+104,train,2026054369,PSK,board_like_normal,20,-5000,NaN,NaN,NaN,10000,NaN,loop01,training grid
+105,train,2026054386,ASK,board_like_normal,20,-5000,NaN,NaN,NaN,20000,NaN,pn9,training grid
+106,train,2026054403,PSK,board_like_normal,20,-5000,NaN,NaN,NaN,20000,NaN,pn9,training grid
+107,train,2026054420,ASK,board_like_normal,20,-5000,NaN,NaN,NaN,20000,NaN,loop01,training grid
+108,train,2026054437,PSK,board_like_normal,20,-5000,NaN,NaN,NaN,20000,NaN,loop01,training grid
+109,train,2026054454,ASK,board_like_normal,20,-5000,NaN,NaN,NaN,40000,NaN,pn9,training grid
+110,train,2026054471,PSK,board_like_normal,20,-5000,NaN,NaN,NaN,40000,NaN,pn9,training grid
+111,train,2026054488,ASK,board_like_normal,20,-5000,NaN,NaN,NaN,40000,NaN,loop01,training grid
+112,train,2026054505,PSK,board_like_normal,20,-5000,NaN,NaN,NaN,40000,NaN,loop01,training grid
+113,train,2026054522,FSK,board_like_normal,20,-5000,NaN,NaN,NaN,5000,10000,pn9,training grid
+114,train,2026054539,FSK,board_like_normal,20,-5000,NaN,NaN,NaN,5000,10000,loop01,training grid
+115,train,2026054556,FSK,board_like_normal,20,-5000,NaN,NaN,NaN,10000,20000,pn9,training grid
+116,train,2026054573,FSK,board_like_normal,20,-5000,NaN,NaN,NaN,10000,20000,loop01,training grid
+117,train,2026054590,FSK,board_like_normal,20,-5000,NaN,NaN,NaN,20000,40000,pn9,training grid
+118,train,2026054607,FSK,board_like_normal,20,-5000,NaN,NaN,NaN,20000,40000,loop01,training grid
+119,train,2026054624,FSK,board_like_normal,20,-5000,NaN,NaN,NaN,40000,80000,pn9,training grid
+120,train,2026054641,FSK,board_like_normal,20,-5000,NaN,NaN,NaN,40000,80000,loop01,training grid
+121,validation,2026054756,AM,board_like_validation,25,-5000,7000,0.35,NaN,NaN,NaN,,held-out AM frequency/depth/profile/SNR
+122,validation,2026054773,AM,board_like_validation,25,-5000,12000,0.65,NaN,NaN,NaN,,held-out AM frequency/depth/profile/SNR
+123,validation,2026054790,FM,board_like_validation,25,-5000,7000,NaN,50000,NaN,NaN,,held-out FM frequency/deviation/profile/SNR
+124,validation,2026054807,FM,board_like_validation,25,-5000,12000,NaN,90000,NaN,NaN,,held-out FM frequency/deviation/profile/SNR
+125,validation,2026054824,ASK,board_like_validation,25,-5000,NaN,NaN,NaN,8000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+126,validation,2026054841,PSK,board_like_validation,25,-5000,NaN,NaN,NaN,8000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+127,validation,2026054858,ASK,board_like_validation,25,-5000,NaN,NaN,NaN,8000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+128,validation,2026054875,PSK,board_like_validation,25,-5000,NaN,NaN,NaN,8000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+129,validation,2026054892,ASK,board_like_validation,25,-5000,NaN,NaN,NaN,12000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+130,validation,2026054909,PSK,board_like_validation,25,-5000,NaN,NaN,NaN,12000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+131,validation,2026054926,ASK,board_like_validation,25,-5000,NaN,NaN,NaN,12000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+132,validation,2026054943,PSK,board_like_validation,25,-5000,NaN,NaN,NaN,12000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+133,validation,2026054960,ASK,board_like_validation,25,-5000,NaN,NaN,NaN,30000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+134,validation,2026054977,PSK,board_like_validation,25,-5000,NaN,NaN,NaN,30000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+135,validation,2026054994,ASK,board_like_validation,25,-5000,NaN,NaN,NaN,30000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+136,validation,2026055011,PSK,board_like_validation,25,-5000,NaN,NaN,NaN,30000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+137,validation,2026055028,FSK,board_like_validation,25,-5000,NaN,NaN,NaN,8000,15000,pn11,held-out FSK rate/separation/profile/SNR
+138,validation,2026055045,FSK,board_like_validation,25,-5000,NaN,NaN,NaN,8000,15000,bursty,held-out FSK rate/separation/profile/SNR
+139,validation,2026055062,FSK,board_like_validation,25,-5000,NaN,NaN,NaN,12000,30000,pn11,held-out FSK rate/separation/profile/SNR
+140,validation,2026055079,FSK,board_like_validation,25,-5000,NaN,NaN,NaN,12000,30000,bursty,held-out FSK rate/separation/profile/SNR
+141,validation,2026055096,FSK,board_like_validation,25,-5000,NaN,NaN,NaN,30000,60000,pn11,held-out FSK rate/separation/profile/SNR
+142,validation,2026055113,FSK,board_like_validation,25,-5000,NaN,NaN,NaN,30000,60000,bursty,held-out FSK rate/separation/profile/SNR
+143,validation,2026055130,AM,board_like_validation,15,-5000,7000,0.35,NaN,NaN,NaN,,held-out AM frequency/depth/profile/SNR
+144,validation,2026055147,AM,board_like_validation,15,-5000,12000,0.65,NaN,NaN,NaN,,held-out AM frequency/depth/profile/SNR
+145,validation,2026055164,FM,board_like_validation,15,-5000,7000,NaN,50000,NaN,NaN,,held-out FM frequency/deviation/profile/SNR
+146,validation,2026055181,FM,board_like_validation,15,-5000,12000,NaN,90000,NaN,NaN,,held-out FM frequency/deviation/profile/SNR
+147,validation,2026055198,ASK,board_like_validation,15,-5000,NaN,NaN,NaN,8000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+148,validation,2026055215,PSK,board_like_validation,15,-5000,NaN,NaN,NaN,8000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+149,validation,2026055232,ASK,board_like_validation,15,-5000,NaN,NaN,NaN,8000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+150,validation,2026055249,PSK,board_like_validation,15,-5000,NaN,NaN,NaN,8000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+151,validation,2026055266,ASK,board_like_validation,15,-5000,NaN,NaN,NaN,12000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+152,validation,2026055283,PSK,board_like_validation,15,-5000,NaN,NaN,NaN,12000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+153,validation,2026055300,ASK,board_like_validation,15,-5000,NaN,NaN,NaN,12000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+154,validation,2026055317,PSK,board_like_validation,15,-5000,NaN,NaN,NaN,12000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+155,validation,2026055334,ASK,board_like_validation,15,-5000,NaN,NaN,NaN,30000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+156,validation,2026055351,PSK,board_like_validation,15,-5000,NaN,NaN,NaN,30000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+157,validation,2026055368,ASK,board_like_validation,15,-5000,NaN,NaN,NaN,30000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+158,validation,2026055385,PSK,board_like_validation,15,-5000,NaN,NaN,NaN,30000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+159,validation,2026055402,FSK,board_like_validation,15,-5000,NaN,NaN,NaN,8000,15000,pn11,held-out FSK rate/separation/profile/SNR
+160,validation,2026055419,FSK,board_like_validation,15,-5000,NaN,NaN,NaN,8000,15000,bursty,held-out FSK rate/separation/profile/SNR
+161,validation,2026055436,FSK,board_like_validation,15,-5000,NaN,NaN,NaN,12000,30000,pn11,held-out FSK rate/separation/profile/SNR
+162,validation,2026055453,FSK,board_like_validation,15,-5000,NaN,NaN,NaN,12000,30000,bursty,held-out FSK rate/separation/profile/SNR
+163,validation,2026055470,FSK,board_like_validation,15,-5000,NaN,NaN,NaN,30000,60000,pn11,held-out FSK rate/separation/profile/SNR
+164,validation,2026055487,FSK,board_like_validation,15,-5000,NaN,NaN,NaN,30000,60000,bursty,held-out FSK rate/separation/profile/SNR
+165,validation,2026055504,AM,board_like_hard,25,-5000,7000,0.35,NaN,NaN,NaN,,held-out AM frequency/depth/profile/SNR
+166,validation,2026055521,AM,board_like_hard,25,-5000,12000,0.65,NaN,NaN,NaN,,held-out AM frequency/depth/profile/SNR
+167,validation,2026055538,FM,board_like_hard,25,-5000,7000,NaN,50000,NaN,NaN,,held-out FM frequency/deviation/profile/SNR
+168,validation,2026055555,FM,board_like_hard,25,-5000,12000,NaN,90000,NaN,NaN,,held-out FM frequency/deviation/profile/SNR
+169,validation,2026055572,ASK,board_like_hard,25,-5000,NaN,NaN,NaN,8000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+170,validation,2026055589,PSK,board_like_hard,25,-5000,NaN,NaN,NaN,8000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+171,validation,2026055606,ASK,board_like_hard,25,-5000,NaN,NaN,NaN,8000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+172,validation,2026055623,PSK,board_like_hard,25,-5000,NaN,NaN,NaN,8000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+173,validation,2026055640,ASK,board_like_hard,25,-5000,NaN,NaN,NaN,12000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+174,validation,2026055657,PSK,board_like_hard,25,-5000,NaN,NaN,NaN,12000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+175,validation,2026055674,ASK,board_like_hard,25,-5000,NaN,NaN,NaN,12000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+176,validation,2026055691,PSK,board_like_hard,25,-5000,NaN,NaN,NaN,12000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+177,validation,2026055708,ASK,board_like_hard,25,-5000,NaN,NaN,NaN,30000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+178,validation,2026055725,PSK,board_like_hard,25,-5000,NaN,NaN,NaN,30000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+179,validation,2026055742,ASK,board_like_hard,25,-5000,NaN,NaN,NaN,30000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+180,validation,2026055759,PSK,board_like_hard,25,-5000,NaN,NaN,NaN,30000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+181,validation,2026055776,FSK,board_like_hard,25,-5000,NaN,NaN,NaN,8000,15000,pn11,held-out FSK rate/separation/profile/SNR
+182,validation,2026055793,FSK,board_like_hard,25,-5000,NaN,NaN,NaN,8000,15000,bursty,held-out FSK rate/separation/profile/SNR
+183,validation,2026055810,FSK,board_like_hard,25,-5000,NaN,NaN,NaN,12000,30000,pn11,held-out FSK rate/separation/profile/SNR
+184,validation,2026055827,FSK,board_like_hard,25,-5000,NaN,NaN,NaN,12000,30000,bursty,held-out FSK rate/separation/profile/SNR
+185,validation,2026055844,FSK,board_like_hard,25,-5000,NaN,NaN,NaN,30000,60000,pn11,held-out FSK rate/separation/profile/SNR
+186,validation,2026055861,FSK,board_like_hard,25,-5000,NaN,NaN,NaN,30000,60000,bursty,held-out FSK rate/separation/profile/SNR
+187,validation,2026055878,AM,board_like_hard,15,-5000,7000,0.35,NaN,NaN,NaN,,held-out AM frequency/depth/profile/SNR
+188,validation,2026055895,AM,board_like_hard,15,-5000,12000,0.65,NaN,NaN,NaN,,held-out AM frequency/depth/profile/SNR
+189,validation,2026055912,FM,board_like_hard,15,-5000,7000,NaN,50000,NaN,NaN,,held-out FM frequency/deviation/profile/SNR
+190,validation,2026055929,FM,board_like_hard,15,-5000,12000,NaN,90000,NaN,NaN,,held-out FM frequency/deviation/profile/SNR
+191,validation,2026055946,ASK,board_like_hard,15,-5000,NaN,NaN,NaN,8000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+192,validation,2026055963,PSK,board_like_hard,15,-5000,NaN,NaN,NaN,8000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+193,validation,2026055980,ASK,board_like_hard,15,-5000,NaN,NaN,NaN,8000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+194,validation,2026055997,PSK,board_like_hard,15,-5000,NaN,NaN,NaN,8000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+195,validation,2026056014,ASK,board_like_hard,15,-5000,NaN,NaN,NaN,12000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+196,validation,2026056031,PSK,board_like_hard,15,-5000,NaN,NaN,NaN,12000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+197,validation,2026056048,ASK,board_like_hard,15,-5000,NaN,NaN,NaN,12000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+198,validation,2026056065,PSK,board_like_hard,15,-5000,NaN,NaN,NaN,12000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+199,validation,2026056082,ASK,board_like_hard,15,-5000,NaN,NaN,NaN,30000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+200,validation,2026056099,PSK,board_like_hard,15,-5000,NaN,NaN,NaN,30000,NaN,pn11,held-out digital rate/pattern/profile/SNR
+201,validation,2026056116,ASK,board_like_hard,15,-5000,NaN,NaN,NaN,30000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+202,validation,2026056133,PSK,board_like_hard,15,-5000,NaN,NaN,NaN,30000,NaN,bursty,held-out digital rate/pattern/profile/SNR
+203,validation,2026056150,FSK,board_like_hard,15,-5000,NaN,NaN,NaN,8000,15000,pn11,held-out FSK rate/separation/profile/SNR
+204,validation,2026056167,FSK,board_like_hard,15,-5000,NaN,NaN,NaN,8000,15000,bursty,held-out FSK rate/separation/profile/SNR
+205,validation,2026056184,FSK,board_like_hard,15,-5000,NaN,NaN,NaN,12000,30000,pn11,held-out FSK rate/separation/profile/SNR
+206,validation,2026056201,FSK,board_like_hard,15,-5000,NaN,NaN,NaN,12000,30000,bursty,held-out FSK rate/separation/profile/SNR
+207,validation,2026056218,FSK,board_like_hard,15,-5000,NaN,NaN,NaN,30000,60000,pn11,held-out FSK rate/separation/profile/SNR
+208,validation,2026056235,FSK,board_like_hard,15,-5000,NaN,NaN,NaN,30000,60000,bursty,held-out FSK rate/separation/profile/SNR

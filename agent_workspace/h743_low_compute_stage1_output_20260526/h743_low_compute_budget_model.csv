@@ -1,0 +1,11 @@
+modulation,variant,basis,per_sample_cycles,per_symbol_cycles_at_peak,fixed_block_cycles,measured_override_cycles,estimated_block_cycles,budget_cycles,cap_90pct_cycles,util_of_full_budget_pct,util_of_90pct_cap_pct,pass_90pct_cap,notes
+AM,current_iq_sqrt_envelope,model,135,0,10000,NaN,562960,960000,864000,58.6416666666667,65.1574074074074,1,"sqrt envelope cost is kept until measured AM DWT logs are available"
+AM,low_abs_approx_envelope,candidate,65,0,8000,NaN,274240,960000,864000,28.5666666666667,31.7407407407407,1,"replace sqrt with max(absI,absQ)+k*min(absI,absQ); tune only on train split"
+ASK,current_envelope_cluster,model,145,300,10000,NaN,627920,960000,864000,65.4083333333333,72.6759259259259,1,"envelope plus dynamic cluster; polarity-invariant BER scoring required"
+ASK,low_abs_approx_cluster,candidate,75,180,8000,NaN,329600,960000,864000,34.3333333333333,38.1481481481481,1,"low-cost envelope and symbol accumulator; train threshold only on train split"
+FM,current_integer_discriminator,model,190,0,10000,NaN,788240,960000,864000,82.1083333333333,91.2314814814815,1,"current task calls integer FM path, not CMSIS atan2 path"
+FM,low_decim2_discriminator,candidate,105,0,12000,NaN,442080,960000,864000,46.05,51.1666666666667,1,"candidate for high-rate stress only; do not replace working FM until DWT proves need"
+FSK,current_decim4_measured,measured,0,0,0,723838,723838,960000,864000,75.3997916666667,83.7775462962963,1,"from fsk output log 20260525 19:46: cycles_last max 723838"
+FSK,low_decim4_no_exact_division,candidate,85,350,12000,NaN,388160,960000,864000,40.4333333333333,44.9259259259259,1,"keep decim4 and symbol loop; replace exact normalization/division only if quality holds"
+PSK,current_q15_nco_symbol_trig,model,150,1800,15000,NaN,773400,960000,864000,80.5625,89.5138888888889,1,"per-sample Q15 NCO is OK; atan2/cos/sin remain at symbol boundary"
+PSK,low_q15_axis_lut,candidate,92,450,12000,NaN,424832,960000,864000,44.2533333333333,49.1703703703704,1,"replace symbol-boundary trig with small LUT or incremental axis vector after train validation"

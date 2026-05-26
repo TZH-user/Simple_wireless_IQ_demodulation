@@ -1,0 +1,9 @@
+resource,current_state,simulation_implication,source
+CPU,"STM32H743XIH6 Cortex-M7, hard-float ABI","cycle model assumes 480 MHz SystemCoreClock; confirm from demod_perf budget field",cmake/gcc-arm-none-eabi.cmake; Core/Src/main.c
+Compiler,"Debug -O0, Release -Os","Debug DWT is conservative but not final performance acceptance",cmake/gcc-arm-none-eabi.cmake
+ADC input,"ADC1 PC4 and ADC2 PB1, 14-bit, TIM2 TRGO, DMA circular","simulation should include I/Q DC, gain/phase imbalance, ADC quantization",Core/Src/adc.c; Core/Inc/adc.h
+DAC output,"DAC1_OUT2 PA5, TIM2 TRGO, DMA circular, output buffer enabled","watch DAC late counter and 100mVpp/50ohm normalization",Core/Src/dac.c; Core/App/Tasks/DemodTask.c
+Timing,"TIM2 external clock mode on PA15/TIM2_ETR, TRGO update","external sample clock quality matters; include sampling-rate error/jitter in validation",Core/Src/tim.c
+Cache/DMA,"ICache/DCache enabled, DMA buffers in .dma_buffer","DCache clean before DAC DMA remains part of timing budget",Core/Src/main.c; Core/App/Tasks/DemodTask.c
+DSP library,"CMSIS-DSP linked, ARM_MATH_CM7 defined","FM task currently uses integer path; CMSIS atan2 FM path exists but is not dispatched",CMakeLists.txt; Core/App/DEMODE/rx_demod.c
+Potential hardware,"FPU and DSP instructions are active; CORDIC is not assumed enabled","do not base low-compute plan on unverified CORDIC availability",project scan

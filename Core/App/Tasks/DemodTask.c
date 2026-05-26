@@ -3,6 +3,7 @@
 #include "RtosTypes.h"
 #include "AppDebugConfig.h"
 #include "rx_demod.h"
+#include "app_ocxo_cal.h"
 #include "cmsis_os2.h"
 #include "FreeRTOS.h"
 #include "main.h"
@@ -22,8 +23,9 @@
 /* 解调算力日志间隔，单位为已处理 ADC 块；512 块约 1 秒，避免串口日志影响实时性。 */
 #define DEMOD_PERF_LOG_BLOCK_INTERVAL 512U
 /* 运行中切频/切调制低算力监测开关：默认关闭，待上板专项测试后再打开。 */
-#ifndef DEMOD_RUNTIME_MONITOR_ENABLE
-#define DEMOD_RUNTIME_MONITOR_ENABLE 0U
+/* 运行时启停由 SET 菜单 MON ON/OFF 决定，默认 Flash 配置仍为关闭。 */
+#ifndef DEMOD_RUNTIME_MONITOR_BUILD_ENABLE
+#define DEMOD_RUNTIME_MONITOR_BUILD_ENABLE 1U
 #endif
 
 #if (DEMOD_PERF_MONITOR_ENABLE != 0U)
@@ -52,7 +54,7 @@ typedef struct
 } demod_perf_stats_t;
 #endif
 
-#if (DEMOD_RUNTIME_MONITOR_ENABLE != 0U)
+#if (DEMOD_RUNTIME_MONITOR_BUILD_ENABLE != 0U)
 #include "ModDetectTask.h"
 #include <math.h>
 
@@ -115,12 +117,12 @@ static uint8_t            g_demod_dac_irq_configured = 0U;
 static demod_perf_stats_t g_demod_perf;
 static demod_mode_perf_t  g_demod_mode_perf[RX_MODE_PSK + 1U];
 #endif
-#if (DEMOD_RUNTIME_MONITOR_ENABLE != 0U)
+#if (DEMOD_RUNTIME_MONITOR_BUILD_ENABLE != 0U)
 static demod_runtime_monitor_t g_demod_monitor;
 #endif
 
 /* ── 内部辅助：Analyze 模式 → DEMODE 模式 ── */
-#if (DEMOD_RUNTIME_MONITOR_ENABLE != 0U)
+#if (DEMOD_RUNTIME_MONITOR_BUILD_ENABLE != 0U)
 static uint32_t demod_abs_i32(int32_t value)
 {
     return (value < 0) ? (uint32_t)(-value) : (uint32_t)value;
@@ -437,13 +439,21 @@ static void demod_perf_log_if_due(RxMode mode)
 
     n = snprintf(log_buf,
                  sizeof(log_buf),
-                 "demod_perf:mode=%u cycles_last=%lu cycles_max=%lu budget=%lu over=%lu blocks=%lu pub_ovr=%lu dac_half=%lu dac_full=%lu dac_refresh=%lu dac_late=%lu\r\n",
+                 "demod_perf:m=%u,l=%lu,x=%lu,b=%lu,ov=%lu,blk=%lu\r\n",
                  (unsigned int)mode,
                  (unsigned long)g_demod_perf.cycles_last,
                  (unsigned long)g_demod_perf.cycles_max,
                  (unsigned long)g_demod_perf.cycles_budget,
                  (unsigned long)g_demod_perf.over_budget_cnt,
-                 (unsigned long)g_demod_perf.block_cnt,
+                 (unsigned long)g_demod_perf.block_cnt);
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        print_queue_send(log_buf);
+    }
+
+    n = snprintf(log_buf,
+                 sizeof(log_buf),
+                 "demod_dac:p=%lu,h=%lu,f=%lu,r=%lu,lt=%lu\r\n",
                  (unsigned long)g_demod_perf.publish_overwrite_cnt,
                  (unsigned long)g_demod_perf.dac_half_cnt,
                  (unsigned long)g_demod_perf.dac_full_cnt,
@@ -661,7 +671,7 @@ void demod_task_start_with_result(const analyze_result_t *result)
     g_demod_active = 1U;
     __set_PRIMASK(primask);
 
-#if (DEMOD_RUNTIME_MONITOR_ENABLE != 0U)
+#if (DEMOD_RUNTIME_MONITOR_BUILD_ENABLE != 0U)
     memset(&g_demod_monitor, 0, sizeof(g_demod_monitor));
 #endif
 
@@ -694,7 +704,7 @@ void demod_task_stop(void)
     __set_PRIMASK(primask);
 
     RxDemod_Reset();
-#if (DEMOD_RUNTIME_MONITOR_ENABLE != 0U)
+#if (DEMOD_RUNTIME_MONITOR_BUILD_ENABLE != 0U)
     memset(&g_demod_monitor, 0, sizeof(g_demod_monitor));
 #endif
 #if (DEMOD_DAC_OUT2_ENABLE != 0U)
@@ -786,10 +796,14 @@ void StartDemodTask(void *argument)
 
 #if (DEMOD_MODE_LOG_ENABLE != 0U)
             {
-                char log_buf[96];
+                char log_buf[160];
                 int n = snprintf(log_buf, sizeof(log_buf),
-                                 "demod: mode set rx=%d analyze=%d\r\n",
-                                 (int)current_mode, (int)result.mode);
+                                 "demod: mode set rx=%d analyze=%d sym=%luHz low_if=%ldHz fsk_sep=%luHz\r\n",
+                                 (int)current_mode,
+                                 (int)result.mode,
+                                 (unsigned long)demod_symbol_rate_hz,
+                                 (long)result.low_if_hz,
+                                 (unsigned long)result.fsk_separation_hz);
                 if ((n > 0) && ((size_t)n < sizeof(log_buf)))
                 {
                     print_queue_send(log_buf);
@@ -856,11 +870,18 @@ void StartDemodTask(void *argument)
                             g_demod_dac_out_buf);
 #endif
 
-#if (DEMOD_RUNTIME_MONITOR_ENABLE != 0U)
-        demod_runtime_monitor_process(block.i_buf,
-                                      block.q_buf,
-                                      block.sample_cnt,
-                                      g_demod_stats.mode);
+#if (DEMOD_RUNTIME_MONITOR_BUILD_ENABLE != 0U)
+        if (app_ocxo_cal_get_runtime_monitor_enable() != 0U)
+        {
+            demod_runtime_monitor_process(block.i_buf,
+                                          block.q_buf,
+                                          block.sample_cnt,
+                                          g_demod_stats.mode);
+        }
+        else
+        {
+            memset(&g_demod_monitor, 0, sizeof(g_demod_monitor));
+        }
 #endif
 
 #if (DEMOD_DAC_OUT2_ENABLE != 0U)

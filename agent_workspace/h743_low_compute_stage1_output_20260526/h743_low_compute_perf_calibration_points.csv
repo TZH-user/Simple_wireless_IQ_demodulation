@@ -1,0 +1,4 @@
+source,modulation,cycles_last_min,cycles_last_avg,cycles_last_max,cycles_max_seen,budget_cycles,util_last_max_pct,trust_level,notes
+fsk_output_202605251946,FSK,699427,704327,723838,17074337,960000,75.3997916666667,high,cycles_last is below 90pct cap; cycles_max is polluted by startup/mode-switch history
+serial_auto_20260525_010406,AM,2504080,2506915,2509750,18753738,960000,261.432291666667,low_stale,old/automatic log; use only as warning that current AM needs fresh per-mode DWT capture
+serial_auto_20260525_010406,FM,2186530,7596023,18414426,18490406,960000,1918.169375,low_stale,old/automatic log; current visual FM is good but needs fresh per-mode DWT capture

@@ -1,0 +1,165 @@
+#include "ModDetectTask.h"
+
+#include <string.h>
+
+#include "cmsis_os2.h"
+#include "stm32h7xx_hal.h"
+#include "app_mod_detect.h"
+
+extern osMessageQueueId_t ModDetectQueueHandle;
+
+/* 宏定义说明：MODDETECT_TASK_SLOT_COUNT 是调制识别任务内部拷贝缓冲槽数量。 */
+#define MODDETECT_TASK_SLOT_COUNT 2U
+
+typedef struct
+{
+    uint16_t i_buf[APP_MODDET_MAX_BLOCK_SAMPLES]; /* I 路拷贝缓冲，避免识别任务直接访问 ADC DMA 正在复用的内存。 */
+    uint16_t q_buf[APP_MODDET_MAX_BLOCK_SAMPLES]; /* Q 路拷贝缓冲，和 I 路同一序号一起送入识别算法。 */
+    uint32_t sample_cnt;                          /* 本槽实际采样点数。 */
+    uint32_t demod_lo_hz;                         /* 提交时的解调 LO，供后续扩展和调试观察。 */
+    uint32_t carrier_hz;                          /* 提交时估计的载波频率，供后续扩展和调试观察。 */
+    uint32_t tick_ms;                             /* 提交时的 RTOS tick，便于判断识别延迟。 */
+    uint32_t sequence;                            /* 单调递增序号，用于调试是否丢块。 */
+    uint8_t busy;                                 /* 1 表示该槽已提交但尚未被任务处理。 */
+    uint8_t reserved[3];
+} moddetect_task_slot_t;
+
+__attribute__((section(".moddetect_buffer"))) __attribute__((aligned(32)))
+static moddetect_task_slot_t g_moddetect_slots[MODDETECT_TASK_SLOT_COUNT];
+
+static moddetect_task_stats_t g_moddetect_stats;
+
+uint32_t moddetect_task_submit_block(const uint16_t *i_buf,
+                                     const uint16_t *q_buf,
+                                     uint32_t sample_cnt,
+                                     uint32_t demod_lo_hz,
+                                     uint32_t carrier_hz,
+                                     uint32_t tick_ms)
+{
+    uint32_t slot_index;
+    uint32_t primask;
+
+    /* 判断：输入指针为空或采样点数不合法时不能提交识别任务。 */
+    if ((i_buf == NULL) || (q_buf == NULL) ||
+        (sample_cnt == 0U) || (sample_cnt > APP_MODDET_MAX_BLOCK_SAMPLES))
+    {
+        g_moddetect_stats.submit_drop_cnt++;
+        return 0U;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    for (slot_index = 0U; slot_index < MODDETECT_TASK_SLOT_COUNT; slot_index++)
+    {
+        /* 判断：找到空闲槽后立刻占用，避免任务并发取走同一槽。 */
+        if (g_moddetect_slots[slot_index].busy == 0U)
+        {
+            g_moddetect_slots[slot_index].busy = 1U;
+            break;
+        }
+    }
+    __set_PRIMASK(primask);
+
+    /* 判断：没有空闲槽说明识别任务处理不过来，本次丢弃以保护 ADC 实时性。 */
+    if (slot_index >= MODDETECT_TASK_SLOT_COUNT)
+    {
+        g_moddetect_stats.submit_drop_cnt++;
+        return 0U;
+    }
+
+    /* 函数跳转：调用 memcpy()，把当前 ADC block 拷贝到调制识别任务私有缓冲。 */
+    memcpy(g_moddetect_slots[slot_index].i_buf, i_buf, sample_cnt * sizeof(uint16_t));
+    memcpy(g_moddetect_slots[slot_index].q_buf, q_buf, sample_cnt * sizeof(uint16_t));
+    g_moddetect_slots[slot_index].sample_cnt = sample_cnt;
+    g_moddetect_slots[slot_index].demod_lo_hz = demod_lo_hz;
+    g_moddetect_slots[slot_index].carrier_hz = carrier_hz;
+    g_moddetect_slots[slot_index].tick_ms = tick_ms;
+    g_moddetect_slots[slot_index].sequence = g_moddetect_stats.last_sequence + 1U;
+    g_moddetect_stats.last_sequence = g_moddetect_slots[slot_index].sequence;
+
+    /* 判断：RTOS 队列未创建时释放槽并返回失败。 */
+    if (ModDetectQueueHandle == NULL)
+    {
+        g_moddetect_slots[slot_index].busy = 0U;
+        g_moddetect_stats.queue_full_drop_cnt++;
+        return 0U;
+    }
+
+    /* 判断：队列满时释放槽并丢弃当前 block，避免阻塞 ADC 任务。 */
+    if (osMessageQueuePut(ModDetectQueueHandle, &slot_index, 0U, 0U) != osOK)
+    {
+        g_moddetect_slots[slot_index].busy = 0U;
+        g_moddetect_stats.queue_full_drop_cnt++;
+        return 0U;
+    }
+
+    g_moddetect_stats.submit_ok_cnt++;
+    return 1U;
+}
+
+void moddetect_task_reset(void)
+{
+    uint32_t primask;
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    /* 函数跳转：调用 memset()，清空双槽缓冲和统计，避免重扫后沿用上一轮识别结果。 */
+    memset(g_moddetect_slots, 0, sizeof(g_moddetect_slots));
+    memset(&g_moddetect_stats, 0, sizeof(g_moddetect_stats));
+    __set_PRIMASK(primask);
+
+    /* 函数跳转：调用 app_mod_detect_init()，重置调制识别算法内部投票和特征状态。 */
+    app_mod_detect_init(NULL);
+}
+
+void moddetect_task_get_stats(moddetect_task_stats_t *stats_out)
+{
+    /* 判断：输出指针为空时不能复制统计信息，直接返回。 */
+    if (stats_out == NULL)
+    {
+        return;
+    }
+
+    *stats_out = g_moddetect_stats;
+}
+
+void StartModDetectTask(void *argument)
+{
+    uint32_t slot_index;
+
+    (void)argument;
+    /* 函数跳转：调用 app_mod_detect_init()，任务启动后初始化调制识别算法。 */
+    app_mod_detect_init(NULL);
+
+    for (;;)
+    {
+        /* 判断：队列创建失败时任务只能等待，避免空句柄访问。 */
+        if (ModDetectQueueHandle == NULL)
+        {
+            osDelay(100U);
+            continue;
+        }
+
+        /* 判断：成功收到槽号后才进入调制识别处理。 */
+        if (osMessageQueueGet(ModDetectQueueHandle, &slot_index, NULL, osWaitForever) == osOK)
+        {
+            /* 判断：槽号越界表示队列内容异常，直接忽略。 */
+            if (slot_index >= MODDETECT_TASK_SLOT_COUNT)
+            {
+                continue;
+            }
+
+            /* 判断：槽处于忙状态时才说明里面有待处理 IQ block。 */
+            if (g_moddetect_slots[slot_index].busy != 0U)
+            {
+                /* 函数跳转：调用 app_mod_detect_process_iq_block()，在低优先级任务中执行调制识别算法。 */
+                app_mod_detect_process_iq_block(g_moddetect_slots[slot_index].i_buf,
+                                                g_moddetect_slots[slot_index].q_buf,
+                                                g_moddetect_slots[slot_index].sample_cnt);
+                g_moddetect_stats.process_cnt++;
+                g_moddetect_stats.last_process_tick_ms = osKernelGetTickCount();
+                g_moddetect_slots[slot_index].busy = 0U;
+            }
+        }
+    }
+}

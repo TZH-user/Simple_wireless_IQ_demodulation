@@ -1,0 +1,8 @@
+﻿#ifndef APP_DEBUG_CONFIG_H
+#define APP_DEBUG_CONFIG_H
+
+#ifndef APP_PRINT_LOG_ENABLE
+#define APP_PRINT_LOG_ENABLE 1U
+#endif
+
+#endif /* APP_DEBUG_CONFIG_H */

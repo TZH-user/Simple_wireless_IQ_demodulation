@@ -1,0 +1,611 @@
+﻿#include "app_lvgl_ui.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include "cmsis_os2.h"
+#include "app_signal_detect.h"
+#include "app_mod_detect.h"
+#include "app_demod.h"
+#include "../Tasks/DemodTask.h"
+#include "RtosTypes.h"
+#include "lvgl.h"
+
+#define UI_REFRESH_PERIOD_MS 200U
+
+typedef enum
+{
+  APP_UI_PAGE_DETECT = 0,
+  APP_UI_PAGE_DEMOD
+} app_ui_page_t;
+
+typedef struct
+{
+  lv_obj_t *detect_page;
+  lv_obj_t *demod_page;
+
+  lv_obj_t *freq_value;
+  lv_obj_t *scan_status;
+  lv_obj_t *quality_line;
+  lv_obj_t *range_line;
+  lv_obj_t *mod_value;
+  lv_obj_t *demod_value;
+  lv_obj_t *spectrum_value;
+  lv_obj_t *enter_demod_btn;
+
+  lv_obj_t *demod_title;
+  lv_obj_t *demod_state;
+  lv_obj_t *demod_info;
+  lv_obj_t *demod_back_btn;
+  lv_obj_t *demod_chart;
+  lv_chart_series_t *demod_series;
+
+  int32_t demod_chart_points[APP_DEMOD_WAVE_POINTS];
+
+  uint32_t last_refresh_tick;
+  app_ui_page_t current_page;
+} app_lvgl_ui_ctx_t;
+
+static app_lvgl_ui_ctx_t g_ui;
+
+static lv_obj_t *App_LvglUiCreateCard(lv_obj_t *parent,
+                                      lv_coord_t x,
+                                      lv_coord_t y,
+                                      lv_coord_t w,
+                                      lv_coord_t h,
+                                      lv_color_t bg,
+                                      lv_color_t border);
+static lv_obj_t *App_LvglUiCreateCardTitle(lv_obj_t *parent, const char *title);
+static void App_LvglUiFormatFreq(char *out, uint32_t out_len, uint32_t hz);
+static void App_LvglUiFormatRate(char *out, uint32_t out_len, uint32_t hz);
+static void App_LvglUiFormatPermillePercent(char *out, uint32_t out_len, uint32_t permille);
+static void App_LvglUiFormatModParams(char *out,
+                                      uint32_t out_len,
+                                      app_mod_detect_mode_t mode,
+                                      const app_mod_detect_status_t *mod_st);
+static void App_LvglUiShowPage(app_ui_page_t page);
+static void App_LvglUiEnterDemodEvent(lv_event_t *e);
+static void App_LvglUiExitDemodEvent(lv_event_t *e);
+static void App_LvglUiRefreshDemodPage(const app_signal_detect_status_t *sig_st,
+                                       const app_mod_detect_status_t *mod_st);
+
+void App_LvglUiInit(void)
+{
+  lv_obj_t *screen = lv_screen_active();
+  lv_obj_t *main_card;
+  lv_obj_t *side_top_card;
+  lv_obj_t *side_mid_card;
+  lv_obj_t *bottom_card;
+  lv_obj_t *label;
+  lv_obj_t *demod_card;
+  lv_obj_t *btn_label;
+
+
+  lv_obj_clean(screen);
+  g_ui.detect_page = lv_obj_create(screen);
+  lv_obj_set_size(g_ui.detect_page, 800, 480);
+  lv_obj_set_pos(g_ui.detect_page, 0, 0);
+  lv_obj_set_style_bg_opa(g_ui.detect_page, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(g_ui.detect_page, 0, 0);
+  lv_obj_set_style_pad_all(g_ui.detect_page, 0, 0);
+  lv_obj_set_scrollbar_mode(g_ui.detect_page, LV_SCROLLBAR_MODE_OFF);
+
+  g_ui.demod_page = lv_obj_create(screen);
+  lv_obj_set_size(g_ui.demod_page, 800, 480);
+  lv_obj_set_pos(g_ui.demod_page, 0, 0);
+  lv_obj_set_style_bg_opa(g_ui.demod_page, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(g_ui.demod_page, 0, 0);
+  lv_obj_set_style_pad_all(g_ui.demod_page, 0, 0);
+  lv_obj_set_scrollbar_mode(g_ui.demod_page, LV_SCROLLBAR_MODE_OFF);
+
+  lv_obj_set_style_bg_color(screen, lv_color_hex(0x0B1220), 0);
+  lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+
+  label = lv_label_create(g_ui.detect_page);
+  lv_label_set_text(label, "Simple Wireless Auto Receiver");
+  lv_obj_set_style_text_color(label, lv_color_hex(0xD8E6FF), 0);
+  lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, 16, 10);
+
+  g_ui.range_line = lv_label_create(g_ui.detect_page);
+  lv_label_set_text_fmt(g_ui.range_line,
+                        "Scan: %lu.%03lu-%lu.%03lu MHz  Coarse:%luk Fine:+/-%luk/%luk",
+                        (unsigned long)(APP_SIGDET_SCAN_START_HZ / 1000000UL),
+                        (unsigned long)((APP_SIGDET_SCAN_START_HZ % 1000000UL) / 1000UL),
+                        (unsigned long)(APP_SIGDET_SCAN_STOP_HZ / 1000000UL),
+                        (unsigned long)((APP_SIGDET_SCAN_STOP_HZ % 1000000UL) / 1000UL),
+                        (unsigned long)(APP_SIGDET_SCAN_STEP_HZ / 1000UL),
+                        (unsigned long)(APP_SIGDET_FINE_SPAN_HZ / 1000UL),
+                        (unsigned long)(APP_SIGDET_FINE_STEP_HZ / 1000UL));
+  lv_obj_set_style_text_color(g_ui.range_line, lv_color_hex(0x8AA6D1), 0);
+  lv_obj_align(g_ui.range_line, LV_ALIGN_TOP_LEFT, 16, 40);
+
+  main_card = App_LvglUiCreateCard(g_ui.detect_page, 12, 68, 500, 250, lv_color_hex(0x152238), lv_color_hex(0x365C91));
+  (void)App_LvglUiCreateCardTitle(main_card, "Carrier Frequency");
+
+  g_ui.freq_value = lv_label_create(main_card);
+  lv_label_set_text(g_ui.freq_value, "--.--- MHz");
+  lv_obj_set_style_text_color(g_ui.freq_value, lv_color_hex(0xF5FAFF), 0);
+  lv_obj_set_style_text_font(g_ui.freq_value, &lv_font_montserrat_14, 0);
+  lv_obj_align(g_ui.freq_value, LV_ALIGN_TOP_LEFT, 16, 56);
+
+  g_ui.scan_status = lv_label_create(main_card);
+  lv_label_set_text(g_ui.scan_status, "Status: INIT");
+  lv_obj_set_style_text_color(g_ui.scan_status, lv_color_hex(0x9CD0FF), 0);
+  lv_obj_align(g_ui.scan_status, LV_ALIGN_TOP_LEFT, 16, 150);
+
+  g_ui.quality_line = lv_label_create(main_card);
+  lv_label_set_text(g_ui.quality_line, "Metric: best=0 noise=0");
+  lv_obj_set_style_text_color(g_ui.quality_line, lv_color_hex(0xBFD3EF), 0);
+  lv_obj_align(g_ui.quality_line, LV_ALIGN_TOP_LEFT, 16, 182);
+
+  side_top_card = App_LvglUiCreateCard(g_ui.detect_page, 524, 68, 264, 118, lv_color_hex(0x132A23), lv_color_hex(0x1E7A62));
+  (void)App_LvglUiCreateCardTitle(side_top_card, "Modulation Detect");
+  g_ui.mod_value = lv_label_create(side_top_card);
+  lv_label_set_text(g_ui.mod_value, "Mode: --");
+  lv_obj_set_style_text_color(g_ui.mod_value, lv_color_hex(0xD8FFF4), 0);
+  lv_obj_align(g_ui.mod_value, LV_ALIGN_TOP_LEFT, 12, 46);
+
+  side_mid_card = App_LvglUiCreateCard(g_ui.detect_page, 524, 200, 264, 118, lv_color_hex(0x2A1F12), lv_color_hex(0xB1791E));
+  (void)App_LvglUiCreateCardTitle(side_mid_card, "Signal Parameters");
+  g_ui.demod_value = lv_label_create(side_mid_card);
+  lv_label_set_text(g_ui.demod_value, "Audio/Data: --");
+  lv_obj_set_style_text_color(g_ui.demod_value, lv_color_hex(0xFFE8CC), 0);
+  lv_obj_align(g_ui.demod_value, LV_ALIGN_TOP_LEFT, 12, 46);
+
+  bottom_card = App_LvglUiCreateCard(g_ui.detect_page, 12, 332, 776, 136, lv_color_hex(0x1E1728), lv_color_hex(0x6B4D9C));
+  (void)App_LvglUiCreateCardTitle(bottom_card, "Feature / FFT Area");
+  g_ui.spectrum_value = lv_label_create(bottom_card);
+  lv_label_set_text(g_ui.spectrum_value, "Waiting for FFT trace...\n(Reserve this area for frequency-domain visualization)");
+  lv_obj_set_style_text_color(g_ui.spectrum_value, lv_color_hex(0xDECFFF), 0);
+  lv_obj_align(g_ui.spectrum_value, LV_ALIGN_TOP_LEFT, 12, 42);
+
+  g_ui.enter_demod_btn = lv_button_create(g_ui.detect_page);
+  lv_obj_set_size(g_ui.enter_demod_btn, 160, 44);
+  lv_obj_align(g_ui.enter_demod_btn, LV_ALIGN_BOTTOM_RIGHT, -18, -14);
+  lv_obj_set_style_bg_color(g_ui.enter_demod_btn, lv_color_hex(0x1F8B6A), 0);
+  lv_obj_add_event_cb(g_ui.enter_demod_btn, App_LvglUiEnterDemodEvent, LV_EVENT_RELEASED, NULL);
+
+  btn_label = lv_label_create(g_ui.enter_demod_btn);
+  lv_label_set_text(btn_label, "Enter Demod");
+  lv_obj_center(btn_label);
+
+  g_ui.demod_title = lv_label_create(g_ui.demod_page);
+  lv_label_set_text(g_ui.demod_title, "Realtime Demod View");
+  lv_obj_set_style_text_color(g_ui.demod_title, lv_color_hex(0xEAF2FF), 0);
+  lv_obj_set_style_text_font(g_ui.demod_title, &lv_font_montserrat_14, 0);
+  lv_obj_align(g_ui.demod_title, LV_ALIGN_TOP_LEFT, 16, 12);
+
+  g_ui.demod_state = lv_label_create(g_ui.demod_page);
+  lv_label_set_text(g_ui.demod_state, "State: idle");
+  lv_obj_set_style_text_color(g_ui.demod_state, lv_color_hex(0xA9C7F0), 0);
+  lv_obj_align(g_ui.demod_state, LV_ALIGN_TOP_LEFT, 16, 42);
+
+  demod_card = App_LvglUiCreateCard(g_ui.demod_page, 12, 74, 776, 310, lv_color_hex(0x141E2F), lv_color_hex(0x3D6FB6));
+  (void)App_LvglUiCreateCardTitle(demod_card, "AM Baseband Waveform");
+
+  g_ui.demod_chart = lv_chart_create(demod_card);
+  lv_obj_set_size(g_ui.demod_chart, 748, 230);
+  lv_obj_align(g_ui.demod_chart, LV_ALIGN_TOP_LEFT, 14, 42);
+  lv_chart_set_type(g_ui.demod_chart, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(g_ui.demod_chart, APP_DEMOD_WAVE_POINTS);
+  lv_chart_set_range(g_ui.demod_chart, LV_CHART_AXIS_PRIMARY_Y, -1024, 1024);
+  lv_chart_set_update_mode(g_ui.demod_chart, LV_CHART_UPDATE_MODE_CIRCULAR);
+  g_ui.demod_series = lv_chart_add_series(g_ui.demod_chart, lv_color_hex(0x57E3B5), LV_CHART_AXIS_PRIMARY_Y);
+  memset(g_ui.demod_chart_points, 0, sizeof(g_ui.demod_chart_points));
+  lv_chart_set_series_ext_y_array(g_ui.demod_chart, g_ui.demod_series, g_ui.demod_chart_points);
+
+  g_ui.demod_info = lv_label_create(g_ui.demod_page);
+  lv_label_set_text(g_ui.demod_info, "Wave: waiting\nMode: --");
+  lv_obj_set_style_text_color(g_ui.demod_info, lv_color_hex(0xD9E7FF), 0);
+  lv_obj_align(g_ui.demod_info, LV_ALIGN_BOTTOM_LEFT, 18, -18);
+
+  g_ui.demod_back_btn = lv_button_create(g_ui.demod_page);
+  lv_obj_set_size(g_ui.demod_back_btn, 140, 42);
+  lv_obj_align(g_ui.demod_back_btn, LV_ALIGN_BOTTOM_RIGHT, -18, -14);
+  lv_obj_set_style_bg_color(g_ui.demod_back_btn, lv_color_hex(0x7E3F3F), 0);
+  lv_obj_add_event_cb(g_ui.demod_back_btn, App_LvglUiExitDemodEvent, LV_EVENT_RELEASED, NULL);
+
+  btn_label = lv_label_create(g_ui.demod_back_btn);
+  lv_label_set_text(btn_label, "Back");
+  lv_obj_center(btn_label);
+  lv_obj_move_foreground(g_ui.demod_back_btn);
+  App_LvglUiShowPage(APP_UI_PAGE_DETECT);
+}
+
+void App_LvglUiRefresh(void)
+{
+  app_signal_detect_status_t st;
+  app_mod_detect_status_t mod_st;
+  app_demod_status_t demod_st;
+  uint32_t now_tick = osKernelGetTickCount();
+  char freq_buf[32];
+  char left_edge_buf[32];
+  char right_edge_buf[32];
+  char param_buf[128];
+  app_mod_detect_mode_t display_mode;
+
+  if ((uint32_t)(now_tick - g_ui.last_refresh_tick) < UI_REFRESH_PERIOD_MS)
+  {
+    return;
+  }
+  g_ui.last_refresh_tick = now_tick;
+
+  app_signal_detect_get_status(&st);
+  app_mod_detect_get_status(&mod_st);
+  app_demod_get_status(&demod_st);
+
+  if (st.scanning != 0U)
+  {
+    App_LvglUiFormatFreq(freq_buf, sizeof(freq_buf), st.current_lo_hz);
+    lv_label_set_text_fmt(g_ui.scan_status,
+                          (st.stage == APP_SIGDET_STAGE_VPP_FINE_SCAN) ? "Status: VPP FINE (%u/%u)" : "Status: VPP COARSE (%u/%u)",
+                          (unsigned)(st.step_index + 1U),
+                          (unsigned)st.step_count);
+  }
+  else if (st.stage == APP_SIGDET_STAGE_VPP_LOCKED)
+  {
+    App_LvglUiFormatFreq(freq_buf, sizeof(freq_buf), st.estimated_carrier_hz);
+    if (st.carrier_present == 0U)
+    {
+      lv_label_set_text(g_ui.scan_status, "Status: NO VPP RESPONSE");
+    }
+    else if (st.locked != 0U)
+    {
+      lv_label_set_text(g_ui.scan_status, "Status: VPP LOCKED");
+    }
+    else
+    {
+      lv_label_set_text(g_ui.scan_status, "Status: VPP CANDIDATE");
+    }
+  }
+  else if (st.carrier_present != 0U)
+  {
+    App_LvglUiFormatFreq(freq_buf, sizeof(freq_buf), st.estimated_carrier_hz);
+    lv_label_set_text(g_ui.scan_status, "Status: CARRIER DETECTED");
+  }
+  else
+  {
+    snprintf(freq_buf, sizeof(freq_buf), "--.--- MHz");
+    lv_label_set_text(g_ui.scan_status, "Status: NO CARRIER");
+  }
+
+  lv_label_set_text(g_ui.freq_value, freq_buf);
+  App_LvglUiFormatFreq(left_edge_buf, sizeof(left_edge_buf), st.left_edge_hz);
+  App_LvglUiFormatFreq(right_edge_buf, sizeof(right_edge_buf), st.right_edge_hz);
+  lv_label_set_text_fmt(g_ui.quality_line,
+                        "Vpp: cur=%lu I=%lu Q=%lu peak=%lu valley=%lu\nEdge: L=%s R=%s th=%lu",
+                        (unsigned long)st.current_vpp_raw,
+                        (unsigned long)st.current_i_vpp_raw,
+                        (unsigned long)st.current_q_vpp_raw,
+                        (unsigned long)st.peak_vpp_raw,
+                        (unsigned long)st.valley_vpp_raw,
+                        left_edge_buf,
+                        right_edge_buf,
+                        (unsigned long)st.threshold_vpp_raw);
+  if ((st.stage == APP_SIGDET_STAGE_VPP_LOCKED) &&
+      (st.locked != 0U) &&
+      (st.carrier_present != 0U) &&
+      (mod_st.block_count > 0UL))
+  {
+    display_mode = (mod_st.stable_confidence_percent >= 55U) ? mod_st.stable_mode : mod_st.mode;
+    App_LvglUiFormatModParams(param_buf, sizeof(param_buf), display_mode, &mod_st);
+    lv_label_set_text_fmt(g_ui.mod_value,
+                          "Mode: %s\nConf:%u%% Inst:%s\nBlocks:%lu",
+                          app_mod_detect_mode_name(display_mode),
+                          (unsigned)mod_st.stable_confidence_percent,
+                          app_mod_detect_mode_name(mod_st.mode),
+                          (unsigned long)mod_st.block_count);
+    lv_label_set_text(g_ui.demod_value, param_buf);
+    lv_label_set_text_fmt(g_ui.spectrum_value,
+                          "Features: env=%lu edge=%lu freq=%lu psk=%lu hist=%u\nSign: +%u%% -%u%%  rate=%luHz  dev=%luHz\nFFT: not enabled; reserve for rate/deviation refinement",
+                          (unsigned long)mod_st.env_variation_pm,
+                          (unsigned long)mod_st.env_edge_pm,
+                          (unsigned long)mod_st.freq_activity,
+                          (unsigned long)mod_st.psk_jump_pm,
+                          (unsigned)mod_st.dphi_hist_peak_count,
+                          (unsigned)mod_st.positive_freq_percent,
+                          (unsigned)mod_st.negative_freq_percent,
+                          (unsigned long)mod_st.modulation_rate_hz,
+                          (unsigned long)mod_st.fm_deviation_hz);
+  }
+  else
+  {
+    lv_label_set_text(g_ui.mod_value, "Mode: --\nBlocks: 0");
+    lv_label_set_text(g_ui.demod_value, "Parameters: --");
+    lv_label_set_text(g_ui.spectrum_value,
+                      "Waiting for locked carrier and modulation blocks...\nFFT: reserved for next algorithm stage");
+  }
+
+  (void)demod_st;
+  if (g_ui.current_page == APP_UI_PAGE_DEMOD)
+  {
+    App_LvglUiRefreshDemodPage(&st, &mod_st);
+  }
+}
+
+void App_LvglUiSetModulationText(const char *text)
+{
+  if ((g_ui.mod_value != NULL) && (text != NULL))
+  {
+    lv_label_set_text(g_ui.mod_value, text);
+  }
+}
+
+void App_LvglUiSetDemodText(const char *text)
+{
+  if ((g_ui.demod_value != NULL) && (text != NULL))
+  {
+    lv_label_set_text(g_ui.demod_value, text);
+  }
+}
+
+void App_LvglUiSetSpectrumText(const char *text)
+{
+  if ((g_ui.spectrum_value != NULL) && (text != NULL))
+  {
+    lv_label_set_text(g_ui.spectrum_value, text);
+  }
+}
+
+static lv_obj_t *App_LvglUiCreateCard(lv_obj_t *parent,
+                                      lv_coord_t x,
+                                      lv_coord_t y,
+                                      lv_coord_t w,
+                                      lv_coord_t h,
+                                      lv_color_t bg,
+                                      lv_color_t border)
+{
+  lv_obj_t *card = lv_obj_create(parent);
+
+  lv_obj_set_pos(card, x, y);
+  lv_obj_set_size(card, w, h);
+  lv_obj_set_style_bg_color(card, bg, 0);
+  lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(card, border, 0);
+  lv_obj_set_style_border_width(card, 2, 0);
+  lv_obj_set_style_radius(card, 14, 0);
+  lv_obj_set_style_pad_all(card, 0, 0);
+  lv_obj_set_style_shadow_width(card, 0, 0);
+
+  return card;
+}
+
+static lv_obj_t *App_LvglUiCreateCardTitle(lv_obj_t *parent, const char *title)
+{
+  lv_obj_t *title_label = lv_label_create(parent);
+
+  lv_label_set_text(title_label, title);
+  lv_obj_set_style_text_color(title_label, lv_color_hex(0xEAF2FF), 0);
+  lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 12, 10);
+
+  return title_label;
+}
+
+static void App_LvglUiFormatFreq(char *out, uint32_t out_len, uint32_t hz)
+{
+  snprintf(out,
+           out_len,
+           "%lu.%03lu MHz",
+           (unsigned long)(hz / 1000000UL),
+           (unsigned long)((hz % 1000000UL) / 1000UL));
+}
+
+static void App_LvglUiFormatRate(char *out, uint32_t out_len, uint32_t hz)
+{
+  if (hz >= 1000UL)
+  {
+    snprintf(out,
+             out_len,
+             "%lu.%01lu kHz",
+             (unsigned long)(hz / 1000UL),
+             (unsigned long)((hz % 1000UL) / 100UL));
+  }
+  else
+  {
+    snprintf(out, out_len, "%lu Hz", (unsigned long)hz);
+  }
+}
+
+static void App_LvglUiFormatPermillePercent(char *out, uint32_t out_len, uint32_t permille)
+{
+  snprintf(out,
+           out_len,
+           "%lu.%01lu%%",
+           (unsigned long)(permille / 10UL),
+           (unsigned long)(permille % 10UL));
+}
+
+static void App_LvglUiFormatModParams(char *out,
+                                      uint32_t out_len,
+                                      app_mod_detect_mode_t mode,
+                                      const app_mod_detect_status_t *mod_st)
+{
+  char rate_buf[24];
+  char depth_buf[24];
+  char dev_buf[24];
+
+  App_LvglUiFormatRate(rate_buf, sizeof(rate_buf), mod_st->modulation_rate_hz);
+  App_LvglUiFormatPermillePercent(depth_buf, sizeof(depth_buf), mod_st->am_depth_pm);
+  App_LvglUiFormatRate(dev_buf, sizeof(dev_buf), mod_st->fm_deviation_hz);
+
+  switch (mode)
+  {
+    case APP_MODDET_MODE_AM:
+      snprintf(out, out_len, "AM Depth: %s\nMod Rate: %s\nEnvelope: %lu pm",
+               depth_buf,
+               rate_buf,
+               (unsigned long)mod_st->env_variation_pm);
+      break;
+    case APP_MODDET_MODE_ASK:
+      snprintf(out, out_len, "ASK Depth: %s\nSymbol Rate: %s\nEdge: %lu pm",
+               depth_buf,
+               rate_buf,
+               (unsigned long)mod_st->env_edge_pm);
+      break;
+    case APP_MODDET_MODE_FM:
+      snprintf(out, out_len, "FM Dev(avg): %s\nMod Rate: %s\nFreqAct: %lu pm",
+               dev_buf,
+               rate_buf,
+               (unsigned long)mod_st->freq_activity);
+      break;
+    case APP_MODDET_MODE_FSK:
+      App_LvglUiFormatRate(dev_buf, sizeof(dev_buf), mod_st->fsk_shift_hz);
+      snprintf(out, out_len, "FSK Shift(avg): %s\nSymbol Rate: %s\nSign: +%u%%/-%u%%",
+               dev_buf,
+               rate_buf,
+               (unsigned)mod_st->positive_freq_percent,
+               (unsigned)mod_st->negative_freq_percent);
+      break;
+    case APP_MODDET_MODE_PSK:
+      snprintf(out, out_len, "PSK Rate(est): %s\nJump: %lu pm\nSign: +%u%%/-%u%%",
+               rate_buf,
+               (unsigned long)mod_st->psk_jump_pm,
+               (unsigned)mod_st->positive_freq_percent,
+               (unsigned)mod_st->negative_freq_percent);
+      break;
+    case APP_MODDET_MODE_CW:
+      snprintf(out, out_len, "CW / No modulation\nDev(avg): %s\nDepth: %s",
+               dev_buf,
+               depth_buf);
+      break;
+    case APP_MODDET_MODE_NO_CARRIER:
+      snprintf(out, out_len, "No carrier\nParameters: --");
+      break;
+    case APP_MODDET_MODE_UNKNOWN:
+    default:
+      snprintf(out, out_len, "Unknown modulation\nRate: %s\nDepth: %s",
+               rate_buf,
+               depth_buf);
+      break;
+  }
+}
+
+static void App_LvglUiShowPage(app_ui_page_t page)
+{
+  g_ui.current_page = page;
+
+  if (g_ui.detect_page != NULL)
+  {
+    if (page == APP_UI_PAGE_DETECT)
+    {
+      lv_obj_remove_flag(g_ui.detect_page, LV_OBJ_FLAG_HIDDEN);
+    }
+    else
+    {
+      lv_obj_add_flag(g_ui.detect_page, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+
+  if (g_ui.demod_page != NULL)
+  {
+    if (page == APP_UI_PAGE_DEMOD)
+    {
+      lv_obj_remove_flag(g_ui.demod_page, LV_OBJ_FLAG_HIDDEN);
+    }
+    else
+    {
+      lv_obj_add_flag(g_ui.demod_page, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+}
+
+static void App_LvglUiEnterDemodEvent(lv_event_t *e)
+{
+  (void)e;
+
+  app_demod_set_mode(APP_MODDET_MODE_AM);
+  app_demod_reset_output();
+  app_demod_set_active(1U);
+  demod_task_set_enabled(1U);
+
+  App_LvglUiShowPage(APP_UI_PAGE_DEMOD);
+}
+
+static void App_LvglUiExitDemodEvent(lv_event_t *e)
+{
+  (void)e;
+
+  demod_task_set_enabled(0U);
+  app_demod_set_active(0U);
+  app_demod_reset_output();
+
+  App_LvglUiShowPage(APP_UI_PAGE_DETECT);
+}
+
+static void App_LvglUiRefreshDemodPage(const app_signal_detect_status_t *sig_st,
+                                       const app_mod_detect_status_t *mod_st)
+{
+  app_demod_status_t demod_st;
+  char lo_buf[32];
+  char carrier_buf[32];
+  char rate_buf[24];
+  uint32_t y_peak = 128U;
+
+  app_demod_get_status(&demod_st);
+
+  App_LvglUiFormatFreq(lo_buf, sizeof(lo_buf), sig_st->demod_lo_hz);
+  App_LvglUiFormatFreq(carrier_buf, sizeof(carrier_buf), sig_st->estimated_carrier_hz);
+  App_LvglUiFormatRate(rate_buf, sizeof(rate_buf), mod_st->modulation_rate_hz);
+
+  if ((demod_st.mode == APP_MODDET_MODE_AM) && (demod_st.output_valid != 0U))
+  {
+    uint16_t n = demod_st.waveform_len;
+    if (n > APP_DEMOD_WAVE_POINTS)
+    {
+      n = APP_DEMOD_WAVE_POINTS;
+    }
+
+    for (uint32_t i = 0U; i < APP_DEMOD_WAVE_POINTS; ++i)
+    {
+      g_ui.demod_chart_points[i] = (i < n) ? demod_st.waveform[i] : 0;
+    }
+
+    if (demod_st.peak_abs > y_peak)
+    {
+      y_peak = demod_st.peak_abs;
+    }
+    if (y_peak > 8192U)
+    {
+      y_peak = 8192U;
+    }
+
+    lv_chart_set_range(g_ui.demod_chart, LV_CHART_AXIS_PRIMARY_Y, -(int32_t)y_peak, (int32_t)y_peak);
+    lv_chart_refresh(g_ui.demod_chart);
+
+    lv_label_set_text_fmt(g_ui.demod_state,
+                          "State: running  Mode:%s  Blocks:%lu",
+                          app_mod_detect_mode_name(demod_st.mode),
+                          (unsigned long)demod_st.block_count);
+
+    lv_label_set_text_fmt(g_ui.demod_info,
+                          "Wave: valid  Peak:%lu  DC:%ld\nRate(est): %s\nLO:%s  Carrier:%s\nModDet stable:%s conf:%u%%",
+                          (unsigned long)demod_st.peak_abs,
+                          (long)demod_st.dc_estimate,
+                          rate_buf,
+                          lo_buf,
+                          carrier_buf,
+                          app_mod_detect_mode_name(mod_st->stable_mode),
+                          (unsigned)mod_st->stable_confidence_percent);
+  }
+  else
+  {
+    for (uint32_t i = 0U; i < APP_DEMOD_WAVE_POINTS; ++i)
+    {
+      g_ui.demod_chart_points[i] = 0;
+    }
+    lv_chart_set_range(g_ui.demod_chart, LV_CHART_AXIS_PRIMARY_Y, -1024, 1024);
+    lv_chart_refresh(g_ui.demod_chart);
+
+    lv_label_set_text_fmt(g_ui.demod_state,
+                          "State: idle / unsupported  Mode:%s",
+                          app_mod_detect_mode_name(demod_st.mode));
+
+    lv_label_set_text_fmt(g_ui.demod_info,
+                          "Wave: not available\nRate(est): %s\nLO:%s  Carrier:%s\nOnly AM is implemented in v1",
+                          rate_buf,
+                          lo_buf,
+                          carrier_buf);
+  }
+}
+

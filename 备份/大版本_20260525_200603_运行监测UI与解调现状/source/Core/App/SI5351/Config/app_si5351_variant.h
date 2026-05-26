@@ -1,0 +1,79 @@
+#ifndef APP_SI5351_VARIANT_H
+#define APP_SI5351_VARIANT_H
+
+#include "main.h"
+#include "i2c.h"
+
+/* 三个变体的差异由包装层统一约束，上层业务只需要切这个宏。 */
+#define APP_SI5351_VARIANT_BASIC   1
+#define APP_SI5351_VARIANT_PRO     2
+#define APP_SI5351_VARIANT_PROMAX  3
+
+#ifndef APP_SI5351_SELECTED_VARIANT
+#define APP_SI5351_SELECTED_VARIANT APP_SI5351_VARIANT_PROMAX
+#endif
+
+#define APP_SI5351_PORT_HAL_I2C    1
+#define APP_SI5351_PORT_SOFT_I2C   2
+
+/* 端口模式只在配置头切换，避免后续任务层和底层源码同时改。 */
+#ifndef APP_SI5351_PORT_MODE
+#define APP_SI5351_PORT_MODE APP_SI5351_PORT_HAL_I2C
+#endif
+
+#ifndef APP_SI5351_I2C_TIMEOUT_MS
+#define APP_SI5351_I2C_TIMEOUT_MS  50U
+#endif
+
+#ifndef APP_SI5351_DEVICE_ADDR0
+#define APP_SI5351_DEVICE_ADDR0    (0x60U << 1)
+#endif
+
+#ifndef APP_SI5351_DEVICE_ADDR1
+#define APP_SI5351_DEVICE_ADDR1    (0x61U << 1)
+#endif
+
+#ifndef APP_SI5351_XTAL_HZ
+#define APP_SI5351_XTAL_HZ         25000000UL
+#endif
+
+#ifndef APP_SI5351_CLKIN_HZ
+#define APP_SI5351_CLKIN_HZ        10000000UL
+#endif
+
+#ifndef APP_SI5351_PLL_HZ
+#define APP_SI5351_PLL_HZ          800000000UL
+#endif
+
+/* 当前默认依赖外部 10 MHz CLKIN；若目标板没有接外部参考，需要同步改这里。 */
+#ifndef APP_SI5351_USE_CLKIN
+#define APP_SI5351_USE_CLKIN       1U
+#endif
+
+#if APP_SI5351_PORT_MODE == APP_SI5351_PORT_HAL_I2C
+/* 绑定到哪个硬件 I2C 句柄，只在这里改。 */
+#ifndef APP_SI5351_HAL_I2C_HANDLE
+#define APP_SI5351_HAL_I2C_HANDLE  hi2c1
+#endif
+#endif
+
+#if APP_SI5351_PORT_MODE == APP_SI5351_PORT_SOFT_I2C
+/* 软件 I2C 默认复用触摸引脚，移植到新板时优先先改这组绑定宏。 */
+#ifndef APP_SI5351_SOFT_I2C_SCL_PORT
+#define APP_SI5351_SOFT_I2C_SCL_PORT TOUCH_SCLK_GPIO_Port
+#endif
+#ifndef APP_SI5351_SOFT_I2C_SCL_PIN
+#define APP_SI5351_SOFT_I2C_SCL_PIN  TOUCH_SCLK_Pin
+#endif
+#ifndef APP_SI5351_SOFT_I2C_SDA_PORT
+#define APP_SI5351_SOFT_I2C_SDA_PORT TOUCH_SDA_GPIO_Port
+#endif
+#ifndef APP_SI5351_SOFT_I2C_SDA_PIN
+#define APP_SI5351_SOFT_I2C_SDA_PIN  TOUCH_SDA_Pin
+#endif
+#ifndef APP_SI5351_SOFT_I2C_DELAY_CYCLES
+#define APP_SI5351_SOFT_I2C_DELAY_CYCLES 40U
+#endif
+#endif
+
+#endif /* APP_SI5351_VARIANT_H */

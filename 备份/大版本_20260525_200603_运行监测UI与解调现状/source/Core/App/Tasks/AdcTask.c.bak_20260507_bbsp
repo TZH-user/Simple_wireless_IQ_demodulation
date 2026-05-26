@@ -1,0 +1,401 @@
+#include "cmsis_os2.h"
+#include "main.h"
+#include "adc.h"
+#include "tim.h"
+#include "app_signal_detect.h"
+#include "app_mod_detect.h"
+#include <stdio.h>
+#include <string.h>
+#include "RtosTypes.h"
+
+#define ADC_UART_OUTPUT_ENABLE 0U
+#define ADC_ALGO_LOG_ENABLE    1U
+#define ADC_ALGO_LOG_PERIOD_MS 1000U
+#define ADC_RANGE_LOG_ENABLE    1U
+#define ADC_RANGE_LOG_PERIOD_MS 1000U
+#define ADC_NEAR_RAIL_DELTA     164U  /* ~1% of 14-bit FS (16383) */
+#define ADC_CLIP_LOW            10U
+#define ADC_CLIP_HIGH           16373U /* 16383 - 10 */
+#define ADC_FS_MAX              16383U
+
+static uint32_t adc_raw_to_v_1e4(uint16_t raw)
+{
+    return (uint32_t)((((uint64_t)raw * 33000ULL) + 32767ULL) / 65535ULL);
+}
+
+
+static void adc_start_stream(void)
+{
+    adc1_half_ready = 0U;
+    adc1_full_ready = 0U;
+    adc2_half_ready = 0U;
+    adc2_full_ready = 0U;
+    adc_block_ready_mask = 0U;
+
+    if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc1_buf, ADC_BUFFER_N) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    if (HAL_ADC_Start_DMA(&hadc2, (uint32_t *)adc2_buf, ADC_BUFFER_N) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    if (HAL_TIM_Base_Start(&htim6) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+static inline void adc_invalidate_block_cache(uint32_t start_index)
+{
+#if (__DCACHE_PRESENT == 1U)
+    const int32_t bytes = (int32_t)(ADC_BLOCK_N * sizeof(uint16_t));
+    SCB_InvalidateDCache_by_Addr((uint32_t *)&adc1_buf[start_index], bytes);
+    SCB_InvalidateDCache_by_Addr((uint32_t *)&adc2_buf[start_index], bytes);
+#else
+    (void)start_index;
+#endif
+}
+
+static void adc_publish_block_to_queue(uint32_t start_index)
+{
+    print_msg_t msg;
+    int n;
+
+    msg.len = 0U;
+    msg.kind = PRINT_KIND_VOFA;
+
+    for (uint32_t i = start_index; i < (start_index + ADC_BLOCK_N); i += VOFA_SEND_STEP)
+    {
+        uint32_t adc1_v_1e4 = adc_raw_to_v_1e4(adc1_buf[i]);
+        uint32_t adc2_v_1e4 = adc_raw_to_v_1e4(adc2_buf[i]);
+
+        n = snprintf(&msg.data[msg.len],
+                     sizeof(msg.data) - msg.len,
+                     "%lu.%04lu,%lu.%04lu\n",
+                     adc1_v_1e4 / 10000UL,
+                     adc1_v_1e4 % 10000UL,
+                     adc2_v_1e4 / 10000UL,
+                     adc2_v_1e4 % 10000UL);
+
+        if ((n <= 0) || ((size_t)n >= (sizeof(msg.data) - msg.len)))
+        {
+            osMessageQueuePut(PrintQueueHandle, &msg, 0U, osWaitForever);
+            msg.len = 0U;
+
+            n = snprintf(&msg.data[msg.len],
+                         sizeof(msg.data) - msg.len,
+                         "%lu.%04lu,%lu.%04lu\n",
+                         adc1_v_1e4 / 10000UL,
+                         adc1_v_1e4 % 10000UL,
+                         adc2_v_1e4 / 10000UL,
+                         adc2_v_1e4 % 10000UL);
+
+            if ((n <= 0) || ((size_t)n >= sizeof(msg.data)))
+            {
+                continue;
+            }
+        }
+
+        msg.len += (uint16_t)n;
+    }
+
+    if (msg.len > 0U)
+    {
+        osMessageQueuePut(PrintQueueHandle, &msg, 0U, osWaitForever);
+    }
+}
+
+static void adc_log_health_1s(void)
+{
+    if (ADC_UART_OUTPUT_ENABLE == 0U)
+    {
+        return;
+    }
+
+    static uint32_t last_log_tick = 0U;
+    uint32_t now_tick = osKernelGetTickCount();
+
+    if ((last_log_tick != 0U) &&
+        ((uint32_t)(now_tick - last_log_tick) < ADC_ALGO_LOG_PERIOD_MS))
+    {
+        return;
+    }
+    last_log_tick = now_tick;
+
+    if (g_uart_mode != UART_MODE_LOG)
+    {
+        return;
+    }
+
+    uint8_t pending_mask;
+    uint32_t isr_half;
+    uint32_t isr_full;
+    uint32_t task_half;
+    uint32_t task_full;
+    uint32_t overrun;
+    char log_buf[120];
+
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    pending_mask = adc_block_ready_mask;
+    isr_half = adc_isr_half_cnt;
+    isr_full = adc_isr_full_cnt;
+    task_half = adc_task_half_cnt;
+    task_full = adc_task_full_cnt;
+    overrun = adc_overrun_cnt;
+    __set_PRIMASK(primask);
+
+    int n = snprintf(log_buf,
+                     sizeof(log_buf),
+                     "adc_health: isr(h=%lu,f=%lu) task(h=%lu,f=%lu) pend=0x%02X ov=%lu\r\n",
+                     (unsigned long)isr_half,
+                     (unsigned long)isr_full,
+                     (unsigned long)task_half,
+                     (unsigned long)task_full,
+                     (unsigned int)pending_mask,
+                     (unsigned long)overrun);
+    if (n > 0)
+    {
+        print_queue_send_log(log_buf);
+    }
+}
+
+static void adc_log_algo_1s(void)
+{
+    if (ADC_ALGO_LOG_ENABLE == 0U)
+    {
+        return;
+    }
+
+    static uint32_t last_log_tick = 0U;
+    uint32_t now_tick = osKernelGetTickCount();
+    app_signal_detect_status_t sig;
+    app_mod_detect_status_t mod;
+    char line[125];
+    int n;
+
+    if ((last_log_tick != 0U) &&
+        ((uint32_t)(now_tick - last_log_tick) < ADC_ALGO_LOG_PERIOD_MS))
+    {
+        return;
+    }
+    last_log_tick = now_tick;
+
+    if (g_uart_mode != UART_MODE_LOG)
+    {
+        return;
+    }
+
+    app_signal_detect_get_status(&sig);
+    app_mod_detect_get_status(&mod);
+
+    n = snprintf(line,
+                 sizeof(line),
+                 "sig,s=%u,sc=%u,lk=%u,cp=%u,lo=%lu,est=%lu,k=%u/%u,v=%lu,p=%lu,n=%lu\r\n",
+                 (unsigned)sig.stage,
+                 (unsigned)sig.scanning,
+                 (unsigned)sig.locked,
+                 (unsigned)sig.carrier_present,
+                 (unsigned long)sig.current_lo_hz,
+                 (unsigned long)sig.estimated_carrier_hz,
+                 (unsigned)(sig.step_index + 1U),
+                 (unsigned)sig.step_count,
+                 (unsigned long)sig.current_vpp_raw,
+                 (unsigned long)sig.peak_vpp_raw,
+                 (unsigned long)sig.valley_vpp_raw);
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+        print_queue_send_log(line);
+    }
+
+    n = snprintf(line,
+                 sizeof(line),
+                 "mod,m=%s,ac=%lu,env=%lu,edge=%lu,lvl=%u,fq=%lu,psk=%lu,hist=%u,+=%u,-=%u,blk=%lu\r\n",
+                 app_mod_detect_mode_name(mod.mode),
+                 (unsigned long)mod.ac_power,
+                 (unsigned long)mod.env_variation_pm,
+                 (unsigned long)mod.env_edge_pm,
+                 (unsigned)mod.env_level_count,
+                 (unsigned long)mod.freq_activity,
+                 (unsigned long)mod.psk_jump_pm,
+                 (unsigned)mod.dphi_hist_peak_count,
+                 (unsigned)mod.positive_freq_percent,
+                 (unsigned)mod.negative_freq_percent,
+                 (unsigned long)mod.block_count);
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+        print_queue_send_log(line);
+    }
+}
+
+static uint32_t  adc_range_sample_cnt;
+static uint16_t adc_range_i_min, adc_range_i_max;
+static uint16_t adc_range_q_min, adc_range_q_max;
+static uint32_t adc_range_i_clip_lo, adc_range_i_clip_hi;
+static uint32_t adc_range_q_clip_lo, adc_range_q_clip_hi;
+static uint32_t adc_range_i_near_lo, adc_range_i_near_hi;
+static uint32_t adc_range_q_near_lo, adc_range_q_near_hi;
+
+static void adc_range_reset(void)
+{
+    adc_range_sample_cnt  = 0U;
+    adc_range_i_min = 0xFFFFU; adc_range_i_max = 0U;
+    adc_range_q_min = 0xFFFFU; adc_range_q_max = 0U;
+    adc_range_i_clip_lo = 0U; adc_range_i_clip_hi = 0U;
+    adc_range_q_clip_lo = 0U; adc_range_q_clip_hi = 0U;
+    adc_range_i_near_lo = 0U; adc_range_i_near_hi = 0U;
+    adc_range_q_near_lo = 0U; adc_range_q_near_hi = 0U;
+}
+
+static void adc_range_accum(const uint16_t *i_buf, const uint16_t *q_buf, uint32_t block_n)
+{
+    for (uint32_t i = 0U; i < block_n; i++)
+    {
+        uint16_t iv = i_buf[i];
+        uint16_t qv = q_buf[i];
+
+        if (iv < adc_range_i_min) adc_range_i_min = iv;
+        if (iv > adc_range_i_max) adc_range_i_max = iv;
+        if (qv < adc_range_q_min) adc_range_q_min = qv;
+        if (qv > adc_range_q_max) adc_range_q_max = qv;
+
+        if (iv <= ADC_CLIP_LOW)  adc_range_i_clip_lo++;
+        if (iv >= ADC_CLIP_HIGH) adc_range_i_clip_hi++;
+        if (qv <= ADC_CLIP_LOW)  adc_range_q_clip_lo++;
+        if (qv >= ADC_CLIP_HIGH) adc_range_q_clip_hi++;
+
+        if (iv <= ADC_NEAR_RAIL_DELTA)            adc_range_i_near_lo++;
+        if (iv >= (ADC_FS_MAX - ADC_NEAR_RAIL_DELTA)) adc_range_i_near_hi++;
+        if (qv <= ADC_NEAR_RAIL_DELTA)            adc_range_q_near_lo++;
+        if (qv >= (ADC_FS_MAX - ADC_NEAR_RAIL_DELTA)) adc_range_q_near_hi++;
+    }
+
+    adc_range_sample_cnt += block_n;
+}
+
+static void adc_range_log(void)
+{
+    if (ADC_RANGE_LOG_ENABLE == 0U) return;
+
+    static uint32_t last_log_tick = 0U;
+    uint32_t now_tick = osKernelGetTickCount();
+
+    if ((last_log_tick != 0U) &&
+        ((uint32_t)(now_tick - last_log_tick) < ADC_RANGE_LOG_PERIOD_MS))
+    {
+        return;
+    }
+    last_log_tick = now_tick;
+
+    if (g_uart_mode != UART_MODE_LOG) return;
+    if (adc_range_sample_cnt == 0U) return;
+
+    uint32_t i_vpp = (adc_range_i_max > adc_range_i_min) ? ((uint32_t)adc_range_i_max - (uint32_t)adc_range_i_min) : 0U;
+    uint32_t q_vpp = (adc_range_q_max > adc_range_q_min) ? ((uint32_t)adc_range_q_max - (uint32_t)adc_range_q_min) : 0U;
+
+    char line[200];
+    int n = snprintf(line, sizeof(line),
+        "adc_range,imin=%u,imax=%u,qmin=%u,qmax=%u,ivpp=%lu,qvpp=%lu,iclo=%lu,ichi=%lu,qclo=%lu,qchi=%lu,inlo=%lu,inhi=%lu,qnlo=%lu,qnhi=%lu,n=%lu\r\n",
+        (unsigned)adc_range_i_min, (unsigned)adc_range_i_max,
+        (unsigned)adc_range_q_min, (unsigned)adc_range_q_max,
+        (unsigned long)i_vpp, (unsigned long)q_vpp,
+        (unsigned long)adc_range_i_clip_lo, (unsigned long)adc_range_i_clip_hi,
+        (unsigned long)adc_range_q_clip_lo, (unsigned long)adc_range_q_clip_hi,
+        (unsigned long)adc_range_i_near_lo, (unsigned long)adc_range_i_near_hi,
+        (unsigned long)adc_range_q_near_lo, (unsigned long)adc_range_q_near_hi,
+        (unsigned long)adc_range_sample_cnt);
+    if ((n > 0) && ((size_t)n < sizeof(line)))
+    {
+        print_queue_send_log(line);
+    }
+
+    adc_range_reset();
+}
+
+void StartAdcTask(void *argument)
+{
+    (void)argument;
+    adc_start_stream();
+    app_signal_detect_init();
+    app_mod_detect_init(0);
+    adc_range_reset();
+
+    for (;;)
+    {
+        if (osSemaphoreAcquire(AdcFrameReadySemHandle, osWaitForever) != osOK)
+        {
+            continue;
+        }
+
+        for (;;)
+        {
+            uint8_t block_flag = 0U;
+            uint32_t start_index = 0U;
+
+            uint32_t primask = __get_PRIMASK(); /* 进入临界区，禁止中断，避免与 ADC 中断冲突 */
+            __disable_irq();    
+            /* Claim one completed ADC block before leaving the critical section. */
+            if ((adc_block_ready_mask & 0x01U) != 0U)
+            {
+                adc_block_ready_mask &= (uint8_t)~0x01U;
+                block_flag = 0x01U;
+                start_index = 0U;
+            }
+            else if ((adc_block_ready_mask & 0x02U) != 0U)
+            {
+                adc_block_ready_mask &= (uint8_t)~0x02U;
+                block_flag = 0x02U;
+                start_index = ADC_BLOCK_N;
+            }
+            __set_PRIMASK(primask); /* 退出临界区，允许中�?*/
+
+            if (block_flag == 0U)
+            {
+                break;
+            }
+
+            /* 数据块准备好，先�?CPU 缓存失效，确保后续访问的是最新的 ADC 数据�?*/
+            adc_invalidate_block_cache(start_index);
+            adc_range_accum(&adc1_buf[start_index], &adc2_buf[start_index], ADC_BLOCK_N);
+
+            if (block_flag == 0x01U)
+            {
+                adc_task_half_cnt++;
+            }
+            else
+            {
+                adc_task_full_cnt++;
+            }
+            /* 如果 UART 输出使能，并且当前模式是 VOFA 模式，则�?ADC 数据转换成电压值并发送到打印队列，供 VOFA 功能使用�?*/
+            if ((ADC_UART_OUTPUT_ENABLE != 0U) && (g_uart_mode == UART_MODE_VOFA))
+            {
+                adc_publish_block_to_queue(start_index);
+            }
+
+            /* Fixed mapping for detector input:
+             *   adc1_buf -> I path (PC4 / ADC1_INP4)
+             *   adc2_buf -> Q path (PB1 / ADC2_INP5)
+             */
+            app_signal_detect_process_block(&adc1_buf[start_index], &adc2_buf[start_index], ADC_BLOCK_N);
+
+            {
+                app_signal_detect_status_t sig_status;
+                /* Only run modulation detection after the carrier is locked. */
+                app_signal_detect_get_status(&sig_status);
+                if ((sig_status.stage == APP_SIGDET_STAGE_VPP_LOCKED) &&
+                    (sig_status.locked != 0U) &&
+                    (sig_status.carrier_present != 0U))
+                {
+                    app_mod_detect_process_iq_block(&adc1_buf[start_index], &adc2_buf[start_index], ADC_BLOCK_N);
+                }
+            }
+        }
+
+        adc_log_health_1s();
+        adc_log_algo_1s();
+        adc_range_log();
+    }
+}
