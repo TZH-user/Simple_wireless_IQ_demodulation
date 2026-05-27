@@ -46,6 +46,7 @@ typedef struct
   uint8_t selected_ch;
   uint8_t hw_ready;
   uint8_t dirty_mask;
+  int32_t global_freq_offset_hz;
   int32_t last_err;
 } AppDdsStatus;
 
@@ -189,6 +190,9 @@ int AppDDS_SetAmp(uint16_t amp_code);
  * @note 当前版本只修改状态缓存，并置脏标记，不立即下发硬件。
  */
 int AppDDS_SetPhaseDeg(uint16_t phase_deg);
+
+void AppDDS_SetGlobalFreqOffsetHz(int32_t offset_hz);
+int32_t AppDDS_GetGlobalFreqOffsetHz(void);
 
 /**
  * @brief 把当前缓存的改动统一提交到底层 DDS。

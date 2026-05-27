@@ -62,6 +62,24 @@ static uint16_t AppDDS_NormalizePhaseDeg(uint16_t phase_deg)
   return (uint16_t)(phase_deg % 360U);
 }
 
+/* 下发硬件前叠加全域频偏，缓存频率本身保持为业务层请求值。 */
+static int32_t AppDDS_ApplyGlobalFreqOffset(uint32_t freq_hz)
+{
+  int64_t adjusted_hz = (int64_t)freq_hz + (int64_t)s_dds.global_freq_offset_hz;
+
+  if (adjusted_hz < 0)
+  {
+    return 0;
+  }
+
+  if (adjusted_hz > 2147483647LL)
+  {
+    return 2147483647;
+  }
+
+  return (int32_t)adjusted_hz;
+}
+
 /* 重置软件命令队列到空状态。 */
 static void AppDDS_QueueReset(void)
 {
@@ -215,7 +233,10 @@ AppDdsCmd AppDDS_MakeApplyCmd(void)
  */
 int AppDDS_Init(void)
 {
+  int32_t saved_global_freq_offset_hz = s_dds.global_freq_offset_hz;
+
   memset(&s_dds, 0, sizeof(s_dds));  // 先清零状态结构体
+  s_dds.global_freq_offset_hz = saved_global_freq_offset_hz;
   // 再建立默认缓存，和 APP_AD9959_InitDefault4Ch() 里下发的默认配置一致
   s_dds.freq_hz[0] = APP_AD9959_DEFAULT_FREQ_HZ;
   s_dds.freq_hz[1] = APP_AD9959_DEFAULT_FREQ_HZ;
@@ -241,6 +262,11 @@ int AppDDS_Init(void)
   APP_AD9959_InitDefault4Ch();
   // 标记硬件已准备好，允许后续 Apply 提交到底层
   s_dds.hw_ready = 1U;
+  if (s_dds.global_freq_offset_hz != 0)
+  {
+    s_dds.dirty_mask = (uint8_t)((1U << APP_DDS_CHANNEL_COUNT) - 1U);
+    (void)AppDDS_Apply();
+  }
   return 0;
 }
 
@@ -296,6 +322,18 @@ int AppDDS_SetPhaseDeg(uint16_t phase_deg)
   return 0;
 }
 
+void AppDDS_SetGlobalFreqOffsetHz(int32_t offset_hz)
+{
+  s_dds.global_freq_offset_hz = offset_hz;
+  s_dds.dirty_mask = (uint8_t)((1U << APP_DDS_CHANNEL_COUNT) - 1U);
+  s_dds.last_err = 0;
+}
+
+int32_t AppDDS_GetGlobalFreqOffsetHz(void)
+{
+  return s_dds.global_freq_offset_hz;
+}
+
 /* 把所有脏通道的缓存统一提交到底层 DDS。
  *
  * 当前版本使用 AppAd9959BatchConfig 作为“本次提交请求”：
@@ -331,7 +369,7 @@ int AppDDS_Apply(void)
   {
     if ((s_dds.dirty_mask & (uint8_t)(1U << ch)) != 0U)
     {
-      cfg.freq_hz[ch] = (int32_t)s_dds.freq_hz[ch];
+      cfg.freq_hz[ch] = AppDDS_ApplyGlobalFreqOffset(s_dds.freq_hz[ch]);
       cfg.amp_code[ch] = (int32_t)s_dds.amp_code[ch];
       cfg.phase_deg[ch] = (int32_t)s_dds.phase_deg[ch];
     }

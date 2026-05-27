@@ -11,6 +11,8 @@ extern "C" {
 #define APP_BUZZER_UI_BEEP_MS 25U
 /* 扫频锁定、识别完成、解调启动提示音时长，单位 ms；比按键提示更明显。 */
 #define APP_BUZZER_EVENT_BEEP_MS 90U
+/* 校准保存成功提示音，单位 ms；不受 SET 菜单里的蜂鸣器开关控制。 */
+#define APP_BUZZER_CAL_DONE_BEEP_MS 130U
 
 void app_buzzer_init(void);
 void app_buzzer_process(void);
@@ -19,6 +21,7 @@ void app_buzzer_notify_ui_action(void);
 void app_buzzer_notify_sweep_lock(void);
 void app_buzzer_notify_analyze_done(void);
 void app_buzzer_notify_demod_start(void);
+void app_buzzer_notify_cal_done(void);
 
 #ifdef __cplusplus
 }

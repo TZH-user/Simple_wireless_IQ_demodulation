@@ -35,6 +35,10 @@
 #define MODDETECT_AUTO_TASK_AFTER_SELF_TEST_ENABLE 1U /* 上电自检通过后自动进入任务；关闭后仍保持等待按钮启动。 */
 #define MODDETECT_SELF_TEST_STABLE_BLOCKS 3U /* 自检通过需要连续满足的 ADC 数据块数，数值越大越不容易被瞬态状态误触发。 */
 
+#define MODDETECT_ADC_REF_STARTUP_GRACE_MS 3000U /* 上电后给 ADC 链路预留启动时间，超过后仍无数据才触发时钟恢复。 */
+#define MODDETECT_BLOCK_WAIT_MS 100U /* 等待 ADC 数据块的最长时间；超时后用于检查 ADC 时钟心跳。 */
+#define MODDETECT_CLOCK_RECOVERY_COOLDOWN_MS 3000U /* ADC 心跳丢失时，两次时钟恢复请求之间的最小间隔。 */
+
 static bool sweep_rest =0;
 static bool analyze_rest = 0U;
 #if (MODDETECT_AUTO_DEMOD_ENABLE != 0U)
@@ -45,6 +49,8 @@ static uint8_t g_auto_task_requested = 0U;
 static uint8_t g_boot_auto_task_enable = 0U;
 static uint8_t g_self_test_ok_blocks = 0U;
 static uint8_t g_mixed_retry_used = 0U;
+static uint32_t g_moddetect_start_tick = 0UL;
+static uint32_t g_clock_recovery_last_tick = 0UL;
 static moddetect_run_mode_t g_run_mode = MODDETECT_RUN_IDLE;
 static moddetect_run_mode_t g_requested_mode = MODDETECT_RUN_IDLE;
 
@@ -66,6 +72,7 @@ static void moddetect_request_dds_reinit(void);
 static void moddetect_request_ocxo_dds_output(void);
 static uint8_t moddetect_self_test_is_ready(void);
 static void moddetect_auto_start_task_if_ready(void);
+static void moddetect_watchdog_step(void);
 static uint8_t moddetect_try_low_if_correction(void);
 static uint8_t moddetect_try_mixed_reanalyze(const analyze_result_t *result);
 
@@ -219,6 +226,48 @@ static void moddetect_auto_start_task_if_ready(void)
 }
 
 /* 分析后用残留低中频校验锁点；偏差过大时只修正一次中心并重跑分析。 */
+/* ADC 数据心跳超时说明参考时钟或采样链路可能丢失；只发恢复请求，硬件复位由 SI5351/DDS 任务串行执行。 */
+static void moddetect_watchdog_step(void)
+{
+    uint32_t now_tick = osKernelGetTickCount();
+    uint32_t last_tick;
+    uint8_t lost = 0U;
+    uint32_t primask;
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    last_tick = g_sweep_task_stats.adc_last_tick;
+    if (last_tick == 0UL)
+    {
+        if ((uint32_t)(now_tick - g_moddetect_start_tick) > MODDETECT_ADC_REF_STARTUP_GRACE_MS)
+        {
+            g_sweep_task_stats.adc_ref_ok = 0U;
+            lost = 1U;
+        }
+    }
+    else if ((uint32_t)(now_tick - last_tick) > MODDETECT_ADC_REF_CLOCK_TIMEOUT_MS)
+    {
+        g_sweep_task_stats.adc_ref_ok = 0U;
+        lost = 1U;
+    }
+    __set_PRIMASK(primask);
+
+    if (lost == 0U)
+    {
+        return;
+    }
+
+    if ((g_clock_recovery_last_tick != 0UL) &&
+        ((uint32_t)(now_tick - g_clock_recovery_last_tick) < MODDETECT_CLOCK_RECOVERY_COOLDOWN_MS))
+    {
+        return;
+    }
+
+    g_clock_recovery_last_tick = now_tick;
+    app_si5351_request_recovery();
+    print_queue_send("moddetect: adc clock lost, recover si5351/dds\r\n");
+}
+
 static uint8_t moddetect_try_low_if_correction(void)
 {
 #if (MODDETECT_LOW_IF_VALIDATE_ENABLE != 0U)
@@ -376,7 +425,8 @@ void moddetect_task_request_mode(moddetect_run_mode_t mode)
     if ((mode != MODDETECT_RUN_IDLE) &&
         (mode != MODDETECT_RUN_CALIBRATION) &&
         (mode != MODDETECT_RUN_TASK) &&
-        (mode != MODDETECT_RUN_OCXO_CAL))
+        (mode != MODDETECT_RUN_OCXO_CAL) &&
+        (mode != MODDETECT_RUN_DDS_CAL))
     {
         return;
     }
@@ -460,10 +510,23 @@ static void moddetect_apply_mode_request(void)
     low_if_corrected = 0U;
     g_mixed_retry_used = 0U;
     demod_task_stop();
+    if (requested != MODDETECT_RUN_OCXO_CAL)
+    {
+        app_ocxo_cal_leave();
+    }
+    if (requested != MODDETECT_RUN_DDS_CAL)
+    {
+        app_ocxo_cal_dds_offset_leave();
+    }
 
     if (requested == MODDETECT_RUN_OCXO_CAL)
     {
         app_ocxo_cal_enter();
+        moddetect_request_ocxo_dds_output();
+    }
+    else if (requested == MODDETECT_RUN_DDS_CAL)
+    {
+        app_ocxo_cal_dds_offset_enter();
         moddetect_request_ocxo_dds_output();
     }
 
@@ -520,6 +583,7 @@ void StartModDetectTask(void *argument)
         print_queue_send("ocxo:flash,load,0\r\n");
     }
     g_boot_auto_task_enable = app_ocxo_cal_get_auto_task_enable();
+    g_moddetect_start_tick = osKernelGetTickCount();
 
     if (app_sweep_load_calibration_from_flash() != 0U)
     {
@@ -550,8 +614,10 @@ void StartModDetectTask(void *argument)
             continue;
         }
 
-        if (osSemaphoreAcquire(SweepBlockReadySemHandle, osWaitForever) != osOK)
+        if (osSemaphoreAcquire(SweepBlockReadySemHandle, MODDETECT_BLOCK_WAIT_MS) != osOK)
         {
+            moddetect_watchdog_step();
+            moddetect_apply_mode_request();
             continue;
         }
 
@@ -584,7 +650,7 @@ void StartModDetectTask(void *argument)
             continue;
         }
 
-        if (g_run_mode == MODDETECT_RUN_OCXO_CAL)
+        if ((g_run_mode == MODDETECT_RUN_OCXO_CAL) || (g_run_mode == MODDETECT_RUN_DDS_CAL))
         {
             continue;
         }
@@ -618,6 +684,7 @@ void StartModDetectTask(void *argument)
                 if (app_sweep_save_calibration_to_flash() != 0U)
                 {
                     print_queue_send("cal:flash,save,1\r\n");
+                    app_buzzer_notify_cal_done();
                     primask = __get_PRIMASK();
                     __disable_irq();
                     g_sweep_task_stats.cal_state = MODDETECT_CAL_SAVE_OK;
@@ -729,7 +796,7 @@ void StartModDetectTask(void *argument)
             /* 扫频结果已处理，重置扫频状态以准备下一次扫频，通过sweep_rest=0开启循环扫频 */
             app_buzzer_notify_sweep_lock();
             sweep_rest = 1U;
-            if(sweep_rest == 0U)    app_sweep_reset();
+            /* sweep_rest has been latched above: do not reset the completed sweep here. */
         }
 
         if ((center_hz == 0U) && (app_sweep_is_done() != 0U) && (sweep_rest == 0U))

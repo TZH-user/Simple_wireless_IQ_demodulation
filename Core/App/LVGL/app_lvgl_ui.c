@@ -1,4 +1,4 @@
-﻿#include "app_lvgl_ui.h"
+#include "app_lvgl_ui.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -13,6 +13,8 @@
 #include "app_dds_ctrl.h"
 #include "app_buzzer.h"
 #include "app_ocxo_cal.h"
+#include "../app_memory_map.h"
+#include "../Wallpaper/app_wallpaper.h"
 #include "RtosTypes.h"
 #include "lvgl.h"
 
@@ -45,18 +47,6 @@ typedef enum
   APP_UI_PAGE_DEMOD
 } app_ui_page_t;
 
-typedef enum
-{
-  APP_UI_STATUS_IDLE = 0,
-  APP_UI_STATUS_CALIBRATING,
-  APP_UI_STATUS_CAL_DONE,
-  APP_UI_STATUS_OCXO_CAL,
-  APP_UI_STATUS_SWEEP,
-  APP_UI_STATUS_UNLOCKED,
-  APP_UI_STATUS_ANALYZING,
-  APP_UI_STATUS_DEMOD,
-  APP_UI_STATUS_DONE
-} app_ui_status_t;
 
 typedef enum
 {
@@ -66,9 +56,12 @@ typedef enum
   APP_UI_OCXO_SAVE,
   APP_UI_AUTO_TASK_TOGGLE,
   APP_UI_BOOT_ANIM_TOGGLE,
+  APP_UI_BACKGROUND_TOGGLE,
   APP_UI_RUNTIME_MONITOR_TOGGLE,
   APP_UI_ASK_DEMOD_TOGGLE,
   APP_UI_FSK_DEMOD_TOGGLE,
+  APP_UI_ASK_SQUARE_DC_CYCLE,
+  APP_UI_ASK_SQUARE_THRESHOLD_CYCLE,
   APP_UI_BEEP_UI_TOGGLE,
   APP_UI_BEEP_SWEEP_LOCK_TOGGLE,
   APP_UI_BEEP_ANALYZE_DONE_TOGGLE,
@@ -87,7 +80,8 @@ typedef enum
 {
   APP_UI_CMD_MODE = 0,
   APP_UI_CMD_OCXO_ACTION,
-  APP_UI_CMD_MENU
+  APP_UI_CMD_MENU,
+  APP_UI_CMD_SAVE_CONFIRMED
 } app_ui_command_t;
 
 typedef struct
@@ -96,7 +90,11 @@ typedef struct
   lv_obj_t *demod_page;
 
   lv_obj_t *freq_value;
-  lv_obj_t *scan_status;
+  lv_obj_t *main_card;
+  lv_obj_t *wallpaper_canvas;
+  lv_obj_t *wallpaper_title;
+  lv_obj_t *wallpaper_btn;
+  lv_obj_t *wallpaper_label;
   lv_obj_t *cal_status;
   lv_obj_t *ocxo_status;
   lv_obj_t *adc_ref_status;
@@ -112,6 +110,7 @@ typedef struct
   lv_obj_t *calibrate_btn;
   lv_obj_t *task_btn;
   lv_obj_t *ocxo_btn;
+  lv_obj_t *dds_cal_btn;
   lv_obj_t *ocxo_step_btn;
   lv_obj_t *ocxo_dec_btn;
   lv_obj_t *ocxo_inc_btn;
@@ -129,6 +128,10 @@ typedef struct
   lv_obj_t *ask_demod_label;
   lv_obj_t *fsk_demod_btn;
   lv_obj_t *fsk_demod_label;
+  lv_obj_t *ask_square_dc_btn;
+  lv_obj_t *ask_square_dc_label;
+  lv_obj_t *ask_square_threshold_btn;
+  lv_obj_t *ask_square_threshold_label;
   lv_obj_t *beep_setting_title;
   lv_obj_t *beep_ui_btn;
   lv_obj_t *beep_ui_label;
@@ -149,12 +152,16 @@ typedef struct
   lv_obj_t *demod_back_btn;
   lv_obj_t *demod_chart;
   lv_chart_series_t *demod_series;
+  lv_obj_t *save_confirm_overlay;
 
   uint32_t last_refresh_tick;
   uint32_t cal_save_ok_tick;
   app_ui_page_t current_page;
   app_ui_menu_t active_menu;
   moddetect_cal_state_t last_cal_state;
+  moddetect_run_mode_t pending_save_mode;
+  uint8_t wallpaper_available;
+  uint8_t wallpaper_checked;
 } app_lvgl_ui_ctx_t;
 
 static app_lvgl_ui_ctx_t g_ui;
@@ -186,14 +193,16 @@ static lv_obj_t *App_LvglUiCreateMenuButton(lv_obj_t *parent,
 static void App_LvglUiFormatFreq(char *out, uint32_t out_len, uint32_t hz);
 static const char *App_LvglUiAnalyzeModeText(analyze_mode_t mode);
 static void App_LvglUiFormatAnalyzeParam(char *out, uint32_t out_len, const analyze_result_t *result);
-static void App_LvglUiSetStatus(app_ui_status_t status);
 static void App_LvglUiSetHwStatus(lv_obj_t *status_label, const char *text, lv_color_t bg);
 static void App_LvglUiSetCalBorder(uint8_t active);
 static void App_LvglUiSetOcxoControlsVisible(uint8_t visible);
-static app_ui_status_t App_LvglUiResolveRunStatus(const moddetect_task_stats_t *stats, const demod_task_stats_t *demod_stats);
 static uint8_t App_LvglUiShouldShowOcxoControls(const moddetect_task_stats_t *stats);
 static void App_LvglUiRefreshAutoTaskButton(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshBootAnimButton(const app_ocxo_cal_status_t *ocxo_status);
+static void App_LvglUiRefreshWallpaperButton(const app_ocxo_cal_status_t *ocxo_status);
+static void App_LvglUiSetToggleButton(lv_obj_t *btn, lv_obj_t *label, uint8_t enabled, const char *on_text, const char *off_text);
+static void App_LvglUiApplyWallpaper(const app_ocxo_cal_status_t *ocxo_status);
+static uint8_t App_LvglUiEnsureWallpaperCanvas(void);
 static void App_LvglUiRefreshRuntimeMonitorButton(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshMixedRetryButton(const app_ocxo_cal_status_t *ocxo_status);
 static void App_LvglUiRefreshDemodSettingButtons(const app_ocxo_cal_status_t *ocxo_status);
@@ -206,11 +215,18 @@ static void App_LvglUiRefreshQuality(const moddetect_task_stats_t *stats);
 static void App_LvglUiRefreshHwStatus(const moddetect_task_stats_t *stats);
 static void App_LvglUiRefreshOverallStatus(const moddetect_task_stats_t *stats, const demod_task_stats_t *demod_stats);
 static uint8_t App_LvglUiIsOcxoCalModeActive(void);
+static uint8_t App_LvglUiIsDdsCalModeActive(void);
 static void App_LvglUiLeaveOcxoCalIfActive(void);
+static void App_LvglUiLeaveDdsCalIfActive(void);
+static void App_LvglUiSwitchToTaskMenu(void);
+static void App_LvglUiShowSaveConfirm(moddetect_run_mode_t mode);
+static void App_LvglUiCloseSaveConfirm(void);
+static void App_LvglUiExecuteConfirmedSave(moddetect_run_mode_t mode);
 static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value);
 static void App_LvglUiModeButtonEventCb(lv_event_t *event);
 static void App_LvglUiOcxoButtonEventCb(lv_event_t *event);
 static void App_LvglUiMenuButtonEventCb(lv_event_t *event);
+static void App_LvglUiSaveConfirmEventCb(lv_event_t *event);
 static void App_LvglUiShowPage(app_ui_page_t page);
 
 void App_LvglUiInit(void)
@@ -234,10 +250,19 @@ void App_LvglUiInit(void)
   lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
   g_ui.active_menu = APP_UI_MENU_TASK;
 
+  /* 背景开关关闭时不读取 768 kB 图像；首次打开或已保存为 ON 时再懒加载。 */
+  g_ui.wallpaper_available = 0U;
+  g_ui.wallpaper_checked = 0U;
+  g_ui.wallpaper_canvas = NULL;
+  if (app_ocxo_cal_get_background_enable() != 0U)
+  {
+    (void)App_LvglUiEnsureWallpaperCanvas();
+  }
+
   label = lv_label_create(g_ui.detect_page);
   lv_label_set_text(label, "Sweep Only Receiver");
   lv_obj_set_style_text_color(label, lv_color_hex(0xD8E6FF), 0);
-  lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
   lv_obj_align(label, LV_ALIGN_TOP_LEFT, 16, 10);
 
   g_ui.ad9959_status = lv_label_create(g_ui.detect_page);
@@ -318,6 +343,7 @@ void App_LvglUiInit(void)
                         (unsigned long)((APP_SWEEP_DEFAULT_STOP_HZ % 1000000UL) / 1000UL),
                         (unsigned long)(APP_SWEEP_DEFAULT_STEP_HZ / 1000UL));
   lv_obj_set_style_text_color(g_ui.range_line, lv_color_hex(0x8AA6D1), 0);
+  lv_obj_set_style_text_font(g_ui.range_line, &lv_font_montserrat_16, 0);
   lv_obj_align(g_ui.range_line, LV_ALIGN_TOP_LEFT, 16, 40);
 
   main_card = App_LvglUiCreateCard(g_ui.detect_page,
@@ -327,36 +353,20 @@ void App_LvglUiInit(void)
                                    UI_DASHBOARD_H,
                                    lv_color_hex(0x152238),
                                    lv_color_hex(0x365C91));
+  g_ui.main_card = main_card;
   (void)App_LvglUiCreateCardTitle(main_card, "Signal Result");
 
   g_ui.freq_value = lv_label_create(main_card);
   lv_label_set_text(g_ui.freq_value, "--.--- MHz");
   lv_obj_set_style_text_color(g_ui.freq_value, lv_color_hex(0xF5FAFF), 0);
-  lv_obj_set_style_text_font(g_ui.freq_value, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(g_ui.freq_value, &lv_font_montserrat_16, 0);
   lv_obj_align(g_ui.freq_value, LV_ALIGN_TOP_LEFT, 20, 62);
 
-  g_ui.scan_status = lv_label_create(main_card);
-  lv_obj_set_size(g_ui.scan_status, UI_STATUS_TAG_WIDTH, UI_STATUS_TAG_HEIGHT);
-  lv_label_set_long_mode(g_ui.scan_status, LV_LABEL_LONG_MODE_CLIP);
-  lv_obj_set_style_radius(g_ui.scan_status, UI_STATUS_TAG_RADIUS, 0);
-  lv_obj_set_style_bg_opa(g_ui.scan_status, LV_OPA_COVER, 0);
-  lv_obj_set_style_text_color(g_ui.scan_status, lv_color_hex(0x111827), 0);
-  lv_obj_set_style_text_align(g_ui.scan_status, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_pad_left(g_ui.scan_status, 0, 0);
-  lv_obj_set_style_pad_right(g_ui.scan_status, 0, 0);
-  lv_obj_set_style_pad_top(g_ui.scan_status, UI_STATUS_TAG_TEXT_Y_PAD, 0);
-  lv_obj_set_style_pad_bottom(g_ui.scan_status, 0, 0);
-#if LV_FONT_SOURCE_HAN_SANS_SC_14_CJK
-  lv_obj_set_style_text_font(g_ui.scan_status, &lv_font_source_han_sans_sc_14_cjk, 0);
-#else
-  lv_obj_set_style_text_font(g_ui.scan_status, &lv_font_montserrat_14, 0);
-#endif
-  App_LvglUiSetStatus(APP_UI_STATUS_IDLE);
-  lv_obj_align(g_ui.scan_status, LV_ALIGN_TOP_LEFT, 350, 228);
 
   label = lv_label_create(main_card);
   lv_label_set_text(label, "Menu");
   lv_obj_set_style_text_color(label, lv_color_hex(0xEAF2FF), 0);
+  lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
   lv_obj_align(label, LV_ALIGN_TOP_LEFT, UI_SIDE_MENU_X, 34);
 
   g_ui.menu_cal_btn = App_LvglUiCreateMenuButton(main_card, "CAL", UI_SIDE_MENU_X, 62, APP_UI_MENU_CAL);
@@ -365,11 +375,13 @@ void App_LvglUiInit(void)
 
   g_ui.calibrate_btn = App_LvglUiCreateModeButton(main_card, "FREQ CAL", UI_ACTION_X, 70, MODDETECT_RUN_CALIBRATION);
   g_ui.ocxo_btn = App_LvglUiCreateModeButton(main_card, "OCXO CAL", UI_ACTION_X, 158, MODDETECT_RUN_OCXO_CAL);
+  g_ui.dds_cal_btn = App_LvglUiCreateModeButton(main_card, "DDS CAL", UI_ACTION_X, 246, MODDETECT_RUN_DDS_CAL);
   g_ui.task_btn = App_LvglUiCreateModeButton(main_card, "START TASK", UI_ACTION_X, 70, MODDETECT_RUN_TASK);
 
   label = lv_label_create(main_card);
   lv_label_set_text(label, "Readiness");
   lv_obj_set_style_text_color(label, lv_color_hex(0xEAF2FF), 0);
+  lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
   lv_obj_align(label, LV_ALIGN_TOP_LEFT, 20, 268);
 
   g_ui.overall_status = lv_label_create(main_card);
@@ -379,60 +391,71 @@ void App_LvglUiInit(void)
   lv_obj_set_style_bg_opa(g_ui.overall_status, LV_OPA_COVER, 0);
   lv_obj_set_style_text_color(g_ui.overall_status, lv_color_hex(0xFFFFFF), 0);
   lv_obj_set_style_text_align(g_ui.overall_status, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_font(g_ui.overall_status, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(g_ui.overall_status, &lv_font_montserrat_16, 0);
   lv_obj_set_style_pad_top(g_ui.overall_status, 9, 0);
   App_LvglUiSetHwStatus(g_ui.overall_status, "NEED CAL", lv_color_hex(0xCA8A04));
   lv_obj_align(g_ui.overall_status, LV_ALIGN_TOP_LEFT, 20, 300);
 
-  g_ui.auto_task_btn = App_LvglUiCreateOcxoButton(main_card, "AUTO ON", UI_ACTION_X, 70, 124, APP_UI_AUTO_TASK_TOGGLE);
+  g_ui.auto_task_btn = App_LvglUiCreateOcxoButton(main_card, "AUTO ON", UI_ACTION_X, 58, 124, APP_UI_AUTO_TASK_TOGGLE);
   g_ui.auto_task_label = lv_obj_get_child(g_ui.auto_task_btn, 0);
-  g_ui.boot_anim_btn = App_LvglUiCreateOcxoButton(main_card, "ANIM ON", UI_ACTION_X + 120, 70, 110, APP_UI_BOOT_ANIM_TOGGLE);
+  g_ui.boot_anim_btn = App_LvglUiCreateOcxoButton(main_card, "ANIM ON", UI_ACTION_X + 120, 58, 110, APP_UI_BOOT_ANIM_TOGGLE);
   g_ui.boot_anim_label = lv_obj_get_child(g_ui.boot_anim_btn, 0);
-  g_ui.runtime_monitor_btn = App_LvglUiCreateOcxoButton(main_card, "MON OFF", UI_ACTION_X, 116, 110, APP_UI_RUNTIME_MONITOR_TOGGLE);
+  g_ui.wallpaper_title = lv_label_create(main_card);
+  lv_label_set_text(g_ui.wallpaper_title, "Wallpaper");
+  lv_obj_set_style_text_color(g_ui.wallpaper_title, lv_color_hex(0xEAF2FF), 0);
+  lv_obj_set_style_text_font(g_ui.wallpaper_title, &lv_font_montserrat_16, 0);
+  lv_obj_align(g_ui.wallpaper_title, LV_ALIGN_TOP_LEFT, 250, 268);
+  g_ui.wallpaper_btn = App_LvglUiCreateOcxoButton(main_card, "BG OFF", 250, 300, 110, APP_UI_BACKGROUND_TOGGLE);
+  g_ui.wallpaper_label = lv_obj_get_child(g_ui.wallpaper_btn, 0);
+  g_ui.runtime_monitor_btn = App_LvglUiCreateOcxoButton(main_card, "MON OFF", UI_ACTION_X, 98, 110, APP_UI_RUNTIME_MONITOR_TOGGLE);
   g_ui.runtime_monitor_label = lv_obj_get_child(g_ui.runtime_monitor_btn, 0);
-  g_ui.mixed_retry_btn = App_LvglUiCreateOcxoButton(main_card, "MIX R3", UI_ACTION_X + 120, 116, 110, APP_UI_MIXED_RETRY_CYCLE);
+  g_ui.mixed_retry_btn = App_LvglUiCreateOcxoButton(main_card, "MIX R3", UI_ACTION_X + 120, 98, 110, APP_UI_MIXED_RETRY_CYCLE);
   g_ui.mixed_retry_label = lv_obj_get_child(g_ui.mixed_retry_btn, 0);
 
   g_ui.demod_setting_title = lv_label_create(main_card);
   lv_label_set_text(g_ui.demod_setting_title, "DEMOD");
   lv_obj_set_style_text_color(g_ui.demod_setting_title, lv_color_hex(0xEAF2FF), 0);
-  lv_obj_set_style_text_font(g_ui.demod_setting_title, &lv_font_montserrat_14, 0);
-  lv_obj_align(g_ui.demod_setting_title, LV_ALIGN_TOP_LEFT, UI_ACTION_X, 158);
-  g_ui.ask_demod_btn = App_LvglUiCreateOcxoButton(main_card, "ASK NORM", UI_ACTION_X, 180, 110, APP_UI_ASK_DEMOD_TOGGLE);
+  lv_obj_set_style_text_font(g_ui.demod_setting_title, &lv_font_montserrat_16, 0);
+  lv_obj_align(g_ui.demod_setting_title, LV_ALIGN_TOP_LEFT, UI_ACTION_X, 138);
+  g_ui.ask_demod_btn = App_LvglUiCreateOcxoButton(main_card, "ASK NORM", UI_ACTION_X, 158, 110, APP_UI_ASK_DEMOD_TOGGLE);
   g_ui.ask_demod_label = lv_obj_get_child(g_ui.ask_demod_btn, 0);
-  g_ui.fsk_demod_btn = App_LvglUiCreateOcxoButton(main_card, "FSK NORM", UI_ACTION_X + 120, 180, 110, APP_UI_FSK_DEMOD_TOGGLE);
+  g_ui.fsk_demod_btn = App_LvglUiCreateOcxoButton(main_card, "FSK NORM", UI_ACTION_X + 120, 158, 110, APP_UI_FSK_DEMOD_TOGGLE);
   g_ui.fsk_demod_label = lv_obj_get_child(g_ui.fsk_demod_btn, 0);
+  g_ui.ask_square_dc_btn = App_LvglUiCreateOcxoButton(main_card, "ASK DC 6", UI_ACTION_X, 198, 110, APP_UI_ASK_SQUARE_DC_CYCLE);
+  g_ui.ask_square_dc_label = lv_obj_get_child(g_ui.ask_square_dc_btn, 0);
+  g_ui.ask_square_threshold_btn = App_LvglUiCreateOcxoButton(main_card, "ASK TH 40", UI_ACTION_X + 120, 198, 110, APP_UI_ASK_SQUARE_THRESHOLD_CYCLE);
+  g_ui.ask_square_threshold_label = lv_obj_get_child(g_ui.ask_square_threshold_btn, 0);
 
   g_ui.beep_setting_title = lv_label_create(main_card);
   lv_label_set_text(g_ui.beep_setting_title, "BEEP");
   lv_obj_set_style_text_color(g_ui.beep_setting_title, lv_color_hex(0xEAF2FF), 0);
-  lv_obj_set_style_text_font(g_ui.beep_setting_title, &lv_font_montserrat_14, 0);
-  lv_obj_align(g_ui.beep_setting_title, LV_ALIGN_TOP_LEFT, UI_ACTION_X, 226);
-  g_ui.beep_ui_btn = App_LvglUiCreateOcxoButton(main_card, "UI OFF", UI_ACTION_X, 248, 110, APP_UI_BEEP_UI_TOGGLE);
+  lv_obj_set_style_text_font(g_ui.beep_setting_title, &lv_font_montserrat_16, 0);
+  lv_obj_align(g_ui.beep_setting_title, LV_ALIGN_TOP_LEFT, UI_ACTION_X, 238);
+  g_ui.beep_ui_btn = App_LvglUiCreateOcxoButton(main_card, "UI OFF", UI_ACTION_X, 258, 110, APP_UI_BEEP_UI_TOGGLE);
   g_ui.beep_ui_label = lv_obj_get_child(g_ui.beep_ui_btn, 0);
-  g_ui.beep_lock_btn = App_LvglUiCreateOcxoButton(main_card, "LOCK OFF", UI_ACTION_X + 120, 248, 110, APP_UI_BEEP_SWEEP_LOCK_TOGGLE);
+  g_ui.beep_lock_btn = App_LvglUiCreateOcxoButton(main_card, "LOCK OFF", UI_ACTION_X + 120, 258, 110, APP_UI_BEEP_SWEEP_LOCK_TOGGLE);
   g_ui.beep_lock_label = lv_obj_get_child(g_ui.beep_lock_btn, 0);
-  g_ui.beep_analyze_btn = App_LvglUiCreateOcxoButton(main_card, "ANA OFF", UI_ACTION_X, 294, 110, APP_UI_BEEP_ANALYZE_DONE_TOGGLE);
+  g_ui.beep_analyze_btn = App_LvglUiCreateOcxoButton(main_card, "ANA OFF", UI_ACTION_X, 298, 110, APP_UI_BEEP_ANALYZE_DONE_TOGGLE);
   g_ui.beep_analyze_label = lv_obj_get_child(g_ui.beep_analyze_btn, 0);
-  g_ui.beep_demod_btn = App_LvglUiCreateOcxoButton(main_card, "DEM OFF", UI_ACTION_X + 120, 294, 110, APP_UI_BEEP_DEMOD_START_TOGGLE);
+  g_ui.beep_demod_btn = App_LvglUiCreateOcxoButton(main_card, "DEM OFF", UI_ACTION_X + 120, 298, 110, APP_UI_BEEP_DEMOD_START_TOGGLE);
   g_ui.beep_demod_label = lv_obj_get_child(g_ui.beep_demod_btn, 0);
 
   g_ui.mod_value = lv_label_create(main_card);
   lv_label_set_text(g_ui.mod_value, "Mode: --");
   lv_obj_set_style_text_color(g_ui.mod_value, lv_color_hex(0xF5FAFF), 0);
-  lv_obj_set_style_text_font(g_ui.mod_value, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(g_ui.mod_value, &lv_font_montserrat_16, 0);
   lv_obj_align(g_ui.mod_value, LV_ALIGN_TOP_LEFT, 20, 126);
 
   g_ui.demod_value = lv_label_create(main_card);
   lv_label_set_text(g_ui.demod_value, "Param: --");
   lv_obj_set_style_text_color(g_ui.demod_value, lv_color_hex(0xBFD3EF), 0);
-  lv_obj_set_style_text_font(g_ui.demod_value, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(g_ui.demod_value, &lv_font_montserrat_16, 0);
   lv_obj_align(g_ui.demod_value, LV_ALIGN_TOP_LEFT, 20, 164);
 
   g_ui.ocxo_value = lv_label_create(main_card);
   lv_label_set_text(g_ui.ocxo_value, "DDS: --.---MHz  OCXO: ----mV  Step: --mV");
   lv_obj_set_style_text_color(g_ui.ocxo_value, lv_color_hex(0xBFD3EF), 0);
-  lv_obj_set_style_text_font(g_ui.ocxo_value, &lv_font_montserrat_14, 0);
+  lv_obj_set_style_text_font(g_ui.ocxo_value, &lv_font_montserrat_16, 0);
   lv_obj_align(g_ui.ocxo_value, LV_ALIGN_TOP_LEFT, 20, 202);
 
   g_ui.ocxo_step_btn = App_LvglUiCreateOcxoButton(main_card, "STEP", 20, 228, 88, APP_UI_OCXO_STEP);
@@ -441,10 +464,17 @@ void App_LvglUiInit(void)
   g_ui.ocxo_save_btn = App_LvglUiCreateOcxoButton(main_card, "SAVE", 250, 228, 88, APP_UI_OCXO_SAVE);
   App_LvglUiSetOcxoControlsVisible(0U);
   App_LvglUiRefreshMenuVisibility(NULL);
+  {
+    app_ocxo_cal_status_t initial_settings;
+    app_ocxo_cal_get_status(&initial_settings);
+    App_LvglUiRefreshWallpaperButton(&initial_settings);
+    App_LvglUiApplyWallpaper(&initial_settings);
+  }
 
   g_ui.quality_line = lv_label_create(g_ui.detect_page);
   lv_label_set_text(g_ui.quality_line, "Blocks: 0  Drops: 0");
   lv_obj_set_style_text_color(g_ui.quality_line, lv_color_hex(0xBFD3EF), 0);
+  lv_obj_set_style_text_font(g_ui.quality_line, &lv_font_montserrat_16, 0);
   lv_obj_align(g_ui.quality_line, LV_ALIGN_BOTTOM_LEFT, 16, -12);
 
   App_LvglUiShowPage(APP_UI_PAGE_DETECT);
@@ -472,6 +502,8 @@ void App_LvglUiRefresh(void)
   App_LvglUiRefreshOverallStatus(&st, &demod_st);
   App_LvglUiRefreshAutoTaskButton(&ocxo_status);
   App_LvglUiRefreshBootAnimButton(&ocxo_status);
+  App_LvglUiRefreshWallpaperButton(&ocxo_status);
+  App_LvglUiApplyWallpaper(&ocxo_status);
   App_LvglUiRefreshRuntimeMonitorButton(&ocxo_status);
   App_LvglUiRefreshMixedRetryButton(&ocxo_status);
   App_LvglUiRefreshDemodSettingButtons(&ocxo_status);
@@ -479,70 +511,8 @@ void App_LvglUiRefresh(void)
   App_LvglUiRefreshOcxoControls(&st, &ocxo_status);
   App_LvglUiRefreshMenuVisibility(&st);
   App_LvglUiRefreshMenuButtons();
-  App_LvglUiSetStatus(App_LvglUiResolveRunStatus(&st, &demod_st));
   App_LvglUiRefreshResult(&st, &analyze_result);
   App_LvglUiRefreshQuality(&st);
-}
-
-static void App_LvglUiSetStatus(app_ui_status_t status)
-{
-  const char *text = "IDLE";
-  lv_color_t bg = lv_color_hex(0x93C5FD);
-
-  if (g_ui.scan_status == NULL)
-  {
-    return;
-  }
-
-  switch (status)
-  {
-    case APP_UI_STATUS_DONE:
-      text = "ANALYZE OK";
-      bg = lv_color_hex(0x22C55E);
-      break;
-
-    case APP_UI_STATUS_DEMOD:
-      text = "DEMOD OUT";
-      bg = lv_color_hex(0x22C55E);
-      break;
-
-    case APP_UI_STATUS_ANALYZING:
-      text = "ANALYZING";
-      bg = lv_color_hex(0xFB923C);
-      break;
-
-    case APP_UI_STATUS_UNLOCKED:
-      text = "UNLOCK";
-      bg = lv_color_hex(0xF87171);
-      break;
-
-    case APP_UI_STATUS_CAL_DONE:
-      text = "CAL DONE";
-      bg = lv_color_hex(0x38BDF8);
-      break;
-
-    case APP_UI_STATUS_CALIBRATING:
-      text = "CAL";
-      bg = lv_color_hex(0xFACC15);
-      break;
-
-    case APP_UI_STATUS_OCXO_CAL:
-      text = "OCXO CAL";
-      bg = lv_color_hex(0xFACC15);
-      break;
-
-    case APP_UI_STATUS_SWEEP:
-      text = "SCANNING";
-      bg = lv_color_hex(0xFACC15);
-      break;
-
-    case APP_UI_STATUS_IDLE:
-    default:
-      break;
-  }
-
-  lv_label_set_text(g_ui.scan_status, text);
-  lv_obj_set_style_bg_color(g_ui.scan_status, bg, 0);
 }
 
 static void App_LvglUiSetHwStatus(lv_obj_t *status_label, const char *text, lv_color_t bg)
@@ -584,7 +554,7 @@ static void App_LvglUiSetOneHidden(lv_obj_t *obj, uint8_t hidden)
   }
 }
 
-/* 非 OCXO 校准模式隐藏电压调节控件，避免误触改变 PA4 控制电压。 */
+/* 非手动校准模式隐藏调节控件，避免误触改变 OCXO 电压或 DDS 频偏。 */
 static void App_LvglUiSetOcxoControlsVisible(uint8_t visible)
 {
   uint8_t hidden = (visible == 0U) ? 1U : 0U;
@@ -596,50 +566,11 @@ static void App_LvglUiSetOcxoControlsVisible(uint8_t visible)
   App_LvglUiSetOneHidden(g_ui.ocxo_save_btn, hidden);
 }
 
-/* 把任务状态压缩成主状态标签，避免刷新函数里散落多段优先级判断。 */
-static app_ui_status_t App_LvglUiResolveRunStatus(const moddetect_task_stats_t *stats, const demod_task_stats_t *demod_stats)
-{
-  if ((demod_stats != NULL) && (demod_stats->state == DEMOD_STATE_RUNNING))
-  {
-    return APP_UI_STATUS_DEMOD;
-  }
-
-  if ((stats == NULL) || (stats->run_mode == MODDETECT_RUN_IDLE))
-  {
-    return APP_UI_STATUS_IDLE;
-  }
-
-  if (stats->run_mode == MODDETECT_RUN_CALIBRATION)
-  {
-    return (stats->cal_done != 0U) ? APP_UI_STATUS_CAL_DONE : APP_UI_STATUS_CALIBRATING;
-  }
-
-  if (stats->run_mode == MODDETECT_RUN_OCXO_CAL)
-  {
-    return APP_UI_STATUS_OCXO_CAL;
-  }
-
-  if ((stats->result_ready != 0U) && (stats->center_hz == 0UL))
-  {
-    return APP_UI_STATUS_UNLOCKED;
-  }
-
-  if ((analyze_is_done() != 0U) && (stats->result_ready != 0U) && (stats->center_hz != 0UL))
-  {
-    return APP_UI_STATUS_DONE;
-  }
-
-  if (analyze_is_active() != 0U)
-  {
-    return APP_UI_STATUS_ANALYZING;
-  }
-
-  return APP_UI_STATUS_SWEEP;
-}
-
 static uint8_t App_LvglUiShouldShowOcxoControls(const moddetect_task_stats_t *stats)
 {
-  return ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_OCXO_CAL)) ? 1U : 0U;
+  return ((stats != NULL) &&
+          ((stats->run_mode == MODDETECT_RUN_OCXO_CAL) ||
+           (stats->run_mode == MODDETECT_RUN_DDS_CAL))) ? 1U : 0U;
 }
 
 static void App_LvglUiRefreshAutoTaskButton(const app_ocxo_cal_status_t *ocxo_status)
@@ -678,6 +609,68 @@ static void App_LvglUiRefreshBootAnimButton(const app_ocxo_cal_status_t *ocxo_st
     lv_label_set_text(g_ui.boot_anim_label, "ANIM OFF");
     lv_obj_set_style_bg_color(g_ui.boot_anim_btn, lv_color_hex(0x64748B), 0);
   }
+}
+
+static void App_LvglUiRefreshWallpaperButton(const app_ocxo_cal_status_t *ocxo_status)
+{
+  if ((g_ui.wallpaper_btn == NULL) || (g_ui.wallpaper_label == NULL) || (ocxo_status == NULL))
+  {
+    return;
+  }
+
+  if ((g_ui.wallpaper_checked != 0U) && (g_ui.wallpaper_available == 0U))
+  {
+    lv_label_set_text(g_ui.wallpaper_label, "BG N/A");
+    lv_obj_set_style_bg_color(g_ui.wallpaper_btn, lv_color_hex(0x64748B), 0);
+    return;
+  }
+
+  App_LvglUiSetToggleButton(g_ui.wallpaper_btn,
+                            g_ui.wallpaper_label,
+                            ocxo_status->background_enable,
+                            "BG ON",
+                            "BG OFF");
+}
+
+static void App_LvglUiApplyWallpaper(const app_ocxo_cal_status_t *ocxo_status)
+{
+  uint8_t enabled;
+
+  if ((g_ui.wallpaper_canvas == NULL) || (g_ui.main_card == NULL) || (ocxo_status == NULL))
+  {
+    return;
+  }
+
+  enabled = ((g_ui.wallpaper_available != 0U) && (ocxo_status->background_enable != 0U)) ? 1U : 0U;
+  App_LvglUiSetOneHidden(g_ui.wallpaper_canvas, (enabled == 0U) ? 1U : 0U);
+  lv_obj_set_style_bg_opa(g_ui.main_card, (enabled != 0U) ? LV_OPA_80 : LV_OPA_COVER, 0);
+}
+
+static uint8_t App_LvglUiEnsureWallpaperCanvas(void)
+{
+  if (g_ui.wallpaper_canvas != NULL)
+  {
+    return 1U;
+  }
+
+  g_ui.wallpaper_checked = 1U;
+  if (app_wallpaper_load() != APP_WALLPAPER_OK)
+  {
+    g_ui.wallpaper_available = 0U;
+    return 0U;
+  }
+
+  g_ui.wallpaper_available = 1U;
+  g_ui.wallpaper_canvas = lv_canvas_create(g_ui.detect_page);
+  lv_canvas_set_buffer(g_ui.wallpaper_canvas,
+                       app_wallpaper_get_rgb565_buffer(),
+                       APP_LCD_HOR_RES,
+                       APP_LCD_VER_RES,
+                       LV_COLOR_FORMAT_RGB565);
+  lv_obj_set_pos(g_ui.wallpaper_canvas, 0, 0);
+  lv_obj_remove_flag(g_ui.wallpaper_canvas, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_move_background(g_ui.wallpaper_canvas);
+  return 1U;
 }
 
 static void App_LvglUiRefreshRuntimeMonitorButton(const app_ocxo_cal_status_t *ocxo_status)
@@ -754,6 +747,20 @@ static void App_LvglUiRefreshDemodSettingButtons(const app_ocxo_cal_status_t *oc
                             ocxo_status->fsk_analog_demod_enable,
                             "FSK ENH",
                             "FSK NORM");
+  if ((g_ui.ask_square_dc_btn != NULL) && (g_ui.ask_square_dc_label != NULL))
+  {
+    lv_label_set_text_fmt(g_ui.ask_square_dc_label,
+                          "ASK DC %u",
+                          (unsigned int)ocxo_status->ask_square_dc_shift);
+    lv_obj_set_style_bg_color(g_ui.ask_square_dc_btn, lv_color_hex(0x334155), 0);
+  }
+  if ((g_ui.ask_square_threshold_btn != NULL) && (g_ui.ask_square_threshold_label != NULL))
+  {
+    lv_label_set_text_fmt(g_ui.ask_square_threshold_label,
+                          "ASK TH %u",
+                          (unsigned int)ocxo_status->ask_square_threshold_code);
+    lv_obj_set_style_bg_color(g_ui.ask_square_threshold_btn, lv_color_hex(0x334155), 0);
+  }
 }
 
 static void App_LvglUiRefreshBuzzerButtons(const app_ocxo_cal_status_t *ocxo_status)
@@ -788,6 +795,8 @@ static void App_LvglUiRefreshBuzzerButtons(const app_ocxo_cal_status_t *ocxo_sta
 static void App_LvglUiRefreshOcxoControls(const moddetect_task_stats_t *stats, const app_ocxo_cal_status_t *ocxo_status)
 {
   uint8_t show_controls = App_LvglUiShouldShowOcxoControls(stats);
+  uint8_t ocxo_active = ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_OCXO_CAL)) ? 1U : 0U;
+  uint8_t dds_active = ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_DDS_CAL)) ? 1U : 0U;
 
   App_LvglUiSetOcxoControlsVisible(show_controls);
 
@@ -797,18 +806,40 @@ static void App_LvglUiRefreshOcxoControls(const moddetect_task_stats_t *stats, c
 
     if (ocxo_btn_label != NULL)
     {
-      lv_label_set_text(ocxo_btn_label, (show_controls != 0U) ? "ESC" : "OCXO CAL");
+      lv_label_set_text(ocxo_btn_label, (ocxo_active != 0U) ? "ESC" : "OCXO CAL");
+    }
+  }
+
+  if (g_ui.dds_cal_btn != NULL)
+  {
+    lv_obj_t *dds_btn_label = lv_obj_get_child(g_ui.dds_cal_btn, 0);
+
+    if (dds_btn_label != NULL)
+    {
+      lv_label_set_text(dds_btn_label, (dds_active != 0U) ? "ESC" : "DDS CAL");
     }
   }
 
   if ((g_ui.ocxo_value != NULL) && (ocxo_status != NULL))
   {
-    lv_label_set_text_fmt(g_ui.ocxo_value,
-                          "DDS: %lu.%03luMHz  OCXO: %lumV  Step: %lumV",
-                          (unsigned long)(APP_OCXO_CAL_DDS_FREQ_HZ / 1000000UL),
-                          (unsigned long)((APP_OCXO_CAL_DDS_FREQ_HZ % 1000000UL) / 1000UL),
-                          (unsigned long)ocxo_status->dac_mv,
-                          (unsigned long)ocxo_status->step_mv);
+    if (dds_active != 0U)
+    {
+      lv_label_set_text_fmt(g_ui.ocxo_value,
+                            "DDS: %lu.%03luMHz  Off:%ldHz  Step:%ldHz",
+                            (unsigned long)(APP_OCXO_CAL_DDS_FREQ_HZ / 1000000UL),
+                            (unsigned long)((APP_OCXO_CAL_DDS_FREQ_HZ % 1000000UL) / 1000UL),
+                            (long)ocxo_status->dds_offset_hz,
+                            (long)ocxo_status->dds_offset_step_hz);
+    }
+    else
+    {
+      lv_label_set_text_fmt(g_ui.ocxo_value,
+                            "DDS: %lu.%03luMHz  OCXO: %lumV  Step: %lumV",
+                            (unsigned long)(APP_OCXO_CAL_DDS_FREQ_HZ / 1000000UL),
+                            (unsigned long)((APP_OCXO_CAL_DDS_FREQ_HZ % 1000000UL) / 1000UL),
+                            (unsigned long)ocxo_status->dac_mv,
+                            (unsigned long)ocxo_status->step_mv);
+    }
   }
 }
 
@@ -821,15 +852,19 @@ static void App_LvglUiRefreshMenuVisibility(const moddetect_task_stats_t *stats)
 
   App_LvglUiSetOneHidden(g_ui.calibrate_btn, (show_cal == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.ocxo_btn, (show_cal == 0U) ? 1U : 0U);
+  App_LvglUiSetOneHidden(g_ui.dds_cal_btn, (show_cal == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.task_btn, (show_task == 0U) ? 1U : 0U);
-  App_LvglUiSetOneHidden(g_ui.scan_status, (show_settings != 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.auto_task_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.boot_anim_btn, (show_settings == 0U) ? 1U : 0U);
+  App_LvglUiSetOneHidden(g_ui.wallpaper_title, (show_settings == 0U) ? 1U : 0U);
+  App_LvglUiSetOneHidden(g_ui.wallpaper_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.runtime_monitor_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.mixed_retry_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.demod_setting_title, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.ask_demod_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.fsk_demod_btn, (show_settings == 0U) ? 1U : 0U);
+  App_LvglUiSetOneHidden(g_ui.ask_square_dc_btn, (show_settings == 0U) ? 1U : 0U);
+  App_LvglUiSetOneHidden(g_ui.ask_square_threshold_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.beep_setting_title, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.beep_ui_btn, (show_settings == 0U) ? 1U : 0U);
   App_LvglUiSetOneHidden(g_ui.beep_lock_btn, (show_settings == 0U) ? 1U : 0U);
@@ -921,6 +956,7 @@ static void App_LvglUiRefreshHwStatus(const moddetect_task_stats_t *stats)
       if (stats->cal_state == MODDETECT_CAL_SAVE_OK)
       {
         g_ui.cal_save_ok_tick = now_tick;
+        App_LvglUiSwitchToTaskMenu();
       }
     }
 
@@ -1050,6 +1086,10 @@ static void App_LvglUiRefreshOverallStatus(const moddetect_task_stats_t *stats, 
   {
     App_LvglUiSetHwStatus(g_ui.overall_status, "OCXO CAL", lv_color_hex(0xCA8A04));
   }
+  else if ((stats != NULL) && (stats->run_mode == MODDETECT_RUN_DDS_CAL))
+  {
+    App_LvglUiSetHwStatus(g_ui.overall_status, "DDS CAL", lv_color_hex(0xCA8A04));
+  }
   else if (((stats != NULL) && (stats->run_mode == MODDETECT_RUN_TASK) && (stats->result_ready == 0U)) ||
            (analyze_is_active() != 0U))
   {
@@ -1140,6 +1180,7 @@ static lv_obj_t *App_LvglUiCreateCardTitle(lv_obj_t *parent, const char *title)
 
   lv_label_set_text(title_label, title);
   lv_obj_set_style_text_color(title_label, lv_color_hex(0xEAF2FF), 0);
+  lv_obj_set_style_text_font(title_label, &lv_font_montserrat_16, 0);
   lv_obj_align(title_label, LV_ALIGN_TOP_LEFT, 12, 10);
 
   return title_label;
@@ -1244,6 +1285,20 @@ static uint8_t App_LvglUiIsOcxoCalModeActive(void)
   return 0U;
 }
 
+static uint8_t App_LvglUiIsDdsCalModeActive(void)
+{
+  moddetect_task_stats_t stats;
+
+  moddetect_task_get_stats(&stats);
+  if ((stats.run_mode == MODDETECT_RUN_DDS_CAL) ||
+      (moddetect_task_get_mode() == MODDETECT_RUN_DDS_CAL))
+  {
+    return 1U;
+  }
+
+  return 0U;
+}
+
 /* 离开 OCXO 校准上下文时自动退出 RUN 状态；未保存电压仍按 app_ocxo_cal_leave() 规则保持为 RAM/CURRENT。 */
 static void App_LvglUiLeaveOcxoCalIfActive(void)
 {
@@ -1252,15 +1307,167 @@ static void App_LvglUiLeaveOcxoCalIfActive(void)
     return;
   }
 
+  App_LvglUiCloseSaveConfirm();
   app_ocxo_cal_leave();
   moddetect_task_request_mode(MODDETECT_RUN_IDLE);
   App_LvglUiSetOcxoControlsVisible(0U);
+}
+
+static void App_LvglUiLeaveDdsCalIfActive(void)
+{
+  if (App_LvglUiIsDdsCalModeActive() == 0U)
+  {
+    return;
+  }
+
+  App_LvglUiCloseSaveConfirm();
+  app_ocxo_cal_dds_offset_leave();
+  moddetect_task_request_mode(MODDETECT_RUN_IDLE);
+  App_LvglUiSetOcxoControlsVisible(0U);
+}
+
+static void App_LvglUiSwitchToTaskMenu(void)
+{
+  g_ui.active_menu = APP_UI_MENU_TASK;
+  App_LvglUiSetOcxoControlsVisible(0U);
+  App_LvglUiRefreshMenuButtons();
+  App_LvglUiRefreshMenuVisibility(NULL);
+}
+
+/* 保存前二次确认，避免校准调节时误触把临时值写入 Flash。 */
+static void App_LvglUiShowSaveConfirm(moddetect_run_mode_t mode)
+{
+  lv_obj_t *overlay;
+  lv_obj_t *card;
+  lv_obj_t *title;
+  lv_obj_t *text;
+  lv_obj_t *cancel_btn;
+  lv_obj_t *save_btn;
+  lv_obj_t *label;
+  const char *message = "Save calibration value?";
+
+  if (g_ui.save_confirm_overlay != NULL)
+  {
+    return;
+  }
+
+  if (mode == MODDETECT_RUN_OCXO_CAL)
+  {
+    message = "Save OCXO voltage?";
+  }
+  else if (mode == MODDETECT_RUN_DDS_CAL)
+  {
+    message = "Save DDS offset?";
+  }
+
+  g_ui.pending_save_mode = mode;
+
+  overlay = lv_obj_create(lv_screen_active());
+  g_ui.save_confirm_overlay = overlay;
+  lv_obj_set_size(overlay, 800, 480);
+  lv_obj_set_pos(overlay, 0, 0);
+  lv_obj_set_style_bg_color(overlay, lv_color_hex(0x020617), 0);
+  lv_obj_set_style_bg_opa(overlay, LV_OPA_70, 0);
+  lv_obj_set_style_border_width(overlay, 0, 0);
+  lv_obj_set_style_pad_all(overlay, 0, 0);
+  lv_obj_set_scrollbar_mode(overlay, LV_SCROLLBAR_MODE_OFF);
+
+  card = lv_obj_create(overlay);
+  lv_obj_set_size(card, 320, 172);
+  lv_obj_center(card);
+  lv_obj_set_style_bg_color(card, lv_color_hex(0x0F172A), 0);
+  lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(card, lv_color_hex(0x38BDF8), 0);
+  lv_obj_set_style_border_width(card, 2, 0);
+  lv_obj_set_style_radius(card, 12, 0);
+  lv_obj_set_style_pad_all(card, 0, 0);
+  lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
+
+  title = lv_label_create(card);
+  lv_label_set_text(title, "Confirm Save");
+  lv_obj_set_style_text_color(title, lv_color_hex(0xE0F2FE), 0);
+  lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 18);
+
+  text = lv_label_create(card);
+  lv_label_set_text(text, message);
+  lv_obj_set_style_text_color(text, lv_color_hex(0xCBD5E1), 0);
+  lv_obj_set_style_text_font(text, &lv_font_montserrat_16, 0);
+  lv_obj_align(text, LV_ALIGN_TOP_MID, 0, 58);
+
+  cancel_btn = lv_button_create(card);
+  lv_obj_set_size(cancel_btn, 118, 48);
+  lv_obj_align(cancel_btn, LV_ALIGN_BOTTOM_LEFT, 30, -20);
+  lv_obj_set_style_radius(cancel_btn, 8, 0);
+  lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x334155), 0);
+  lv_obj_set_style_bg_opa(cancel_btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_shadow_width(cancel_btn, 0, 0);
+  lv_obj_add_event_cb(cancel_btn, App_LvglUiSaveConfirmEventCb, LV_EVENT_CLICKED, (void *)0U);
+  label = lv_label_create(cancel_btn);
+  lv_label_set_text(label, "CANCEL");
+  lv_obj_center(label);
+
+  save_btn = lv_button_create(card);
+  lv_obj_set_size(save_btn, 118, 48);
+  lv_obj_align(save_btn, LV_ALIGN_BOTTOM_RIGHT, -30, -20);
+  lv_obj_set_style_radius(save_btn, 8, 0);
+  lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x16A34A), 0);
+  lv_obj_set_style_bg_opa(save_btn, LV_OPA_COVER, 0);
+  lv_obj_set_style_shadow_width(save_btn, 0, 0);
+  lv_obj_add_event_cb(save_btn, App_LvglUiSaveConfirmEventCb, LV_EVENT_CLICKED, (void *)1U);
+  label = lv_label_create(save_btn);
+  lv_label_set_text(label, "SAVE");
+  lv_obj_center(label);
+}
+
+static void App_LvglUiCloseSaveConfirm(void)
+{
+  if (g_ui.save_confirm_overlay == NULL)
+  {
+    return;
+  }
+
+  lv_obj_delete(g_ui.save_confirm_overlay);
+  g_ui.save_confirm_overlay = NULL;
+}
+
+static void App_LvglUiExecuteConfirmedSave(moddetect_run_mode_t mode)
+{
+  App_LvglUiCloseSaveConfirm();
+
+  if (mode == MODDETECT_RUN_DDS_CAL)
+  {
+    if (app_ocxo_cal_save_dds_offset_to_flash() != 0U)
+    {
+      app_buzzer_notify_cal_done();
+    }
+    app_ocxo_cal_dds_offset_leave();
+    moddetect_task_request_mode(MODDETECT_RUN_IDLE);
+    App_LvglUiSwitchToTaskMenu();
+    return;
+  }
+
+  if (mode == MODDETECT_RUN_OCXO_CAL)
+  {
+    if (app_ocxo_cal_save_to_flash() != 0U)
+    {
+      app_buzzer_notify_cal_done();
+    }
+    moddetect_task_request_mode(MODDETECT_RUN_IDLE);
+    App_LvglUiSwitchToTaskMenu();
+  }
 }
 
 /* UI 命令入口：事件回调只提交命令，具体状态变更集中在这里维护。 */
 static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
 {
   app_buzzer_notify_ui_action();
+
+  if (command == APP_UI_CMD_SAVE_CONFIRMED)
+  {
+    App_LvglUiExecuteConfirmedSave((moddetect_run_mode_t)value);
+    return;
+  }
 
   if (command == APP_UI_CMD_MENU)
   {
@@ -1271,6 +1478,7 @@ static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
       if (next_menu != APP_UI_MENU_CAL)
       {
         App_LvglUiLeaveOcxoCalIfActive();
+        App_LvglUiLeaveDdsCalIfActive();
       }
 
       g_ui.active_menu = next_menu;
@@ -1289,9 +1497,20 @@ static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
       return;
     }
 
+    if ((mode == MODDETECT_RUN_DDS_CAL) && (App_LvglUiIsDdsCalModeActive() != 0U))
+    {
+      App_LvglUiLeaveDdsCalIfActive();
+      return;
+    }
+
     if (mode != MODDETECT_RUN_OCXO_CAL)
     {
       App_LvglUiLeaveOcxoCalIfActive();
+    }
+
+    if (mode != MODDETECT_RUN_DDS_CAL)
+    {
+      App_LvglUiLeaveDdsCalIfActive();
     }
 
     moddetect_task_request_mode(mode);
@@ -1314,6 +1533,19 @@ static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
     {
       uint8_t next_enable = (app_ocxo_cal_get_boot_anim_enable() == 0U) ? 1U : 0U;
       (void)app_ocxo_cal_set_boot_anim_enable(next_enable);
+      return;
+    }
+
+    if (action == APP_UI_BACKGROUND_TOGGLE)
+    {
+      if (app_ocxo_cal_get_background_enable() != 0U)
+      {
+        (void)app_ocxo_cal_set_background_enable(0U);
+      }
+      else if (App_LvglUiEnsureWallpaperCanvas() != 0U)
+      {
+        (void)app_ocxo_cal_set_background_enable(1U);
+      }
       return;
     }
 
@@ -1341,6 +1573,18 @@ static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
     {
       uint8_t next_enable = (app_ocxo_cal_get_fsk_analog_demod_enable() == 0U) ? 1U : 0U;
       (void)app_ocxo_cal_set_fsk_analog_demod_enable(next_enable);
+      return;
+    }
+
+    if (action == APP_UI_ASK_SQUARE_DC_CYCLE)
+    {
+      (void)app_ocxo_cal_cycle_ask_square_dc_shift();
+      return;
+    }
+
+    if (action == APP_UI_ASK_SQUARE_THRESHOLD_CYCLE)
+    {
+      (void)app_ocxo_cal_cycle_ask_square_threshold_code();
       return;
     }
 
@@ -1372,6 +1616,33 @@ static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
       return;
     }
 
+    if (moddetect_task_get_mode() == MODDETECT_RUN_DDS_CAL)
+    {
+      app_ocxo_cal_get_status(&status);
+      switch (action)
+      {
+        case APP_UI_OCXO_STEP:
+          app_ocxo_cal_dds_offset_cycle_step();
+          break;
+
+        case APP_UI_OCXO_DEC:
+          app_ocxo_cal_dds_offset_adjust(-status.dds_offset_step_hz);
+          break;
+
+        case APP_UI_OCXO_INC:
+          app_ocxo_cal_dds_offset_adjust(status.dds_offset_step_hz);
+          break;
+
+        case APP_UI_OCXO_SAVE:
+          App_LvglUiShowSaveConfirm(MODDETECT_RUN_DDS_CAL);
+          break;
+
+        default:
+          break;
+      }
+      return;
+    }
+
     if (moddetect_task_get_mode() != MODDETECT_RUN_OCXO_CAL)
     {
       return;
@@ -1393,8 +1664,7 @@ static void App_LvglUiDispatchCommand(app_ui_command_t command, uintptr_t value)
         break;
 
       case APP_UI_OCXO_SAVE:
-        (void)app_ocxo_cal_save_to_flash();
-        moddetect_task_request_mode(MODDETECT_RUN_IDLE);
+        App_LvglUiShowSaveConfirm(MODDETECT_RUN_OCXO_CAL);
         break;
 
       default:
@@ -1429,6 +1699,26 @@ static void App_LvglUiMenuButtonEventCb(lv_event_t *event)
   {
     App_LvglUiDispatchCommand(APP_UI_CMD_MENU, (uintptr_t)lv_event_get_user_data(event));
   }
+}
+
+static void App_LvglUiSaveConfirmEventCb(lv_event_t *event)
+{
+  uintptr_t accepted;
+
+  if (lv_event_get_code(event) != LV_EVENT_CLICKED)
+  {
+    return;
+  }
+
+  accepted = (uintptr_t)lv_event_get_user_data(event);
+  if (accepted == 0U)
+  {
+    App_LvglUiDispatchCommand(APP_UI_CMD_MENU, (uintptr_t)g_ui.active_menu);
+    App_LvglUiCloseSaveConfirm();
+    return;
+  }
+
+  App_LvglUiDispatchCommand(APP_UI_CMD_SAVE_CONFIRMED, (uintptr_t)g_ui.pending_save_mode);
 }
 
 static void App_LvglUiFormatFreq(char *out, uint32_t out_len, uint32_t hz)

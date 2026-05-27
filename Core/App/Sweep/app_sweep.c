@@ -177,7 +177,7 @@ static app_sweep_cal_flash_record_t g_sweep_cal_flash_record;
 static const uint32_t g_sweep_block_freq_hz[] =
 {
     //112500000UL, /* 现场固定电台，避免任务扫频误锁到 112.5 MHz。 */
-    //125000000UL  /* 现场固定电台，避免任务扫频误锁到 125 MHz。 */
+    125000000UL  /* 现场固定电台，避免任务扫频误锁到 125 MHz。 */
 };
 
 static uint16_t sweep_step_count(uint32_t start_hz, uint32_t stop_hz, uint32_t step_hz);

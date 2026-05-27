@@ -22,9 +22,9 @@
 #define ANALYZE_PHASE_SPECTRUM_ENABLE ANALYZE_FREQ_SPECTRUM_ENABLE
 #define ANALYZE_LOG_ENABLE 1U /* 算法日志总控；置 0 后本文件不向打印队列投递日志。 */
 #define ANALYZE_SPECTRUM_SUMMARY_LOG_ENABLE 1U /* 是否输出每类谱的主峰摘要。 */
-#define ANALYZE_IQ_SPECTRUM_FULL_LOG_ENABLE 1U /* 是否逐 bin 输出 IQ 复数谱。 */
-#define ANALYZE_ENV_SPECTRUM_FULL_LOG_ENABLE 1U /* 是否逐 bin 输出包络谱。 */
-#define ANALYZE_PHASE_SPECTRUM_FULL_LOG_ENABLE 1U /* 是否逐 bin 输出频率类特征谱。 */
+#define ANALYZE_IQ_SPECTRUM_FULL_LOG_ENABLE 0U /* 是否逐 bin 输出 IQ 复数谱。 */
+#define ANALYZE_ENV_SPECTRUM_FULL_LOG_ENABLE 0U /* 是否逐 bin 输出包络谱。 */
+#define ANALYZE_PHASE_SPECTRUM_FULL_LOG_ENABLE 0U /* 是否逐 bin 输出频率类特征谱。 */
 #define ANALYZE_START_LOG_ENABLE 0U /* 是否输出分析启动日志。 */
 #define ANALYZE_DEPTH_LOG_ENABLE 0U /* 是否输出每块包络深度与平均深度日志。 */
 #define ANALYZE_RESULT_LOG_ENABLE 1U /* 是否输出一次性分析完成日志。 */

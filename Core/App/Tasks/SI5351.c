@@ -3,6 +3,7 @@
 #include "../SI5351/Config/app_si5351_variant.h"
 #include "../SI5351/Wrapper/app_si5351_drv.h"
 #include "AppDebugConfig.h"
+#include "app_dds_ctrl.h"
 #include "RtosTypes.h"
 #include "cmsis_os2.h"
 
@@ -11,21 +12,24 @@
 #define APP_SI5351_STARTUP_RETRY_MS  200U
 #define APP_SI5351_MONITOR_PERIOD_MS 1000U
 #define APP_SI5351_LOCK_TIMEOUT_MS   100U
+#define APP_SI5351_RECOVERY_REINIT_DDS_ENABLE 1U /* SI5351 恢复成功后同步重新初始化 AD9959，避免参考时钟异常后 DDS 状态残留。 */
 #define APP_SI5351_MONITOR_FAIL_LIMIT 5U /* ready 后连续多少次状态异常才处理；I2C 读失败只告警，不直接关闭已配置输出。 */
 #define SI5351_LOG_ENBLE 1 /* 是否启用 SI5351 相关日志输出 */
 
 /* 默认输出计划集中放在任务层，后续切版本或切板级频点时只改这里即可。 */
+static volatile uint8_t g_app_si5351_recovery_requested = 0U;
+
 static const app_si5351_output_cfg_t g_app_si5351_default_plan[] = {
     /* CH1/CH3 当前不参与主链路，默认写入计划但不打开输出。 */
     {1U, 65000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, false},
-    {2U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
+    {0U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
     {3U, 25000000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, false},
 #if APP_SI5351_SELECTED_VARIANT == APP_SI5351_VARIANT_BASIC
     /* basic 版本不支持强制绑 PLLB，这里必须退回 AUTO。 */
     {0U, 20480000UL, APP_SI5351_PLL_AUTO, APP_SI5351_DRIVE_DEFAULT, true},
 #else
     /* pro/promax 版本允许把 20.48 MHz 独立挂到 PLLB；25/50 MHz 继续留在默认 PLLA 整数分频。 */
-    {0U, 20480000UL, APP_SI5351_PLL_PLLB, APP_SI5351_DRIVE_DEFAULT, true},
+    {2U, 20480000UL, APP_SI5351_PLL_PLLB, APP_SI5351_DRIVE_DEFAULT, true},
 #endif
 };
 
@@ -44,6 +48,20 @@ static void app_si5351_log_fault(app_si5351_result_t result)
     print_queue_send(log_buf);
 #else
     (void)result;
+#endif
+}
+
+void app_si5351_request_recovery(void)
+{
+    g_app_si5351_recovery_requested = 1U;
+}
+
+static void app_si5351_request_dds_reinit(void)
+{
+#if (APP_SI5351_RECOVERY_REINIT_DDS_ENABLE != 0U)
+    AppDdsCmd cmd = AppDDS_MakeInitCmd();
+
+    (void)AppDDS_DispatchCmd(&cmd);
 #endif
 }
 
@@ -101,6 +119,34 @@ void StartSI5351(void *argument)
     {
         app_si5351_result_t result;
 
+        if (g_app_si5351_recovery_requested != 0U)
+        {
+            g_app_si5351_recovery_requested = 0U;
+            (void)app_si5351_enable_outputs(false);
+            result = app_si5351_start_default_plan();
+            if (result == APP_SI5351_RESULT_OK)
+            {
+#if (SI5351_LOG_ENBLE != 0U)
+                print_queue_send("si5351: recovered, dds reinit\r\n");
+#endif
+                app_si5351_request_dds_reinit();
+                last_fault = APP_SI5351_RESULT_OK;
+                monitor_fail_cnt = 0U;
+                osDelay(APP_SI5351_MONITOR_PERIOD_MS);
+                continue;
+            }
+
+            if (result != last_fault)
+            {
+                app_si5351_log_fault(result);
+                last_fault = result;
+            }
+            g_app_si5351_recovery_requested = 1U;
+            monitor_fail_cnt = 0U;
+            osDelay(APP_SI5351_STARTUP_RETRY_MS);
+            continue;
+        }
+
         if (!app_si5351_is_clock_ready())
         {
             /* 未 ready 时持续重试“探测 -> 初始化 -> 应用计划”，直到外部参考与 PLL 都稳定。 */
@@ -149,24 +195,12 @@ void StartSI5351(void *argument)
                 continue;
             }
 
-            if (result == APP_SI5351_RESULT_I2C_READ)
-            {
-                if (result != last_fault)
-                {
-                    app_si5351_log_fault(result);
-                    last_fault = result;
-                }
-                monitor_fail_cnt = 0U;
-                osDelay(APP_SI5351_MONITOR_PERIOD_MS);
-                continue;
-            }
-
-            (void)app_si5351_enable_outputs(false);
             if (result != last_fault)
             {
                 app_si5351_log_fault(result);
                 last_fault = result;
             }
+            app_si5351_request_recovery();
             monitor_fail_cnt = 0U;
             osDelay(APP_SI5351_STARTUP_RETRY_MS);
             continue;

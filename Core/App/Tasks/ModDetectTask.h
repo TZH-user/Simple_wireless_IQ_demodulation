@@ -12,7 +12,8 @@ typedef enum
     MODDETECT_RUN_IDLE = 0,
     MODDETECT_RUN_CALIBRATION,
     MODDETECT_RUN_TASK,
-    MODDETECT_RUN_OCXO_CAL
+    MODDETECT_RUN_OCXO_CAL,
+    MODDETECT_RUN_DDS_CAL
 } moddetect_run_mode_t;
 
 typedef enum

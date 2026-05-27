@@ -106,6 +106,8 @@
  * 后面需要中文字体时，再单独接入自己的字库。
  */
 #define LV_FONT_MONTSERRAT_14 1
+#define LV_FONT_MONTSERRAT_16 1
+#define LV_USE_CANVAS 1
 #define LV_FONT_SOURCE_HAN_SANS_SC_14_CJK 1
 
 #endif /* LV_CONF_H */

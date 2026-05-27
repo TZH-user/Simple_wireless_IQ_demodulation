@@ -2,6 +2,7 @@
 #include "arm_math.h"
 #include "dsp/fast_math_functions.h"
 #include "RtosTypes.h"
+#include "app_ocxo_cal.h"
 #include <math.h>
 #include <stdio.h>
 
@@ -47,7 +48,7 @@
 #define RX_DEMOD_LOAD_OHM        50U
 #define RX_DEMOD_SOURCE_OHM      50U
 #define RX_DEMOD_AM_OUT_VPP_MV   100U
-#define RX_DEMOD_FM_OUT_VPP_MV   100U
+#define RX_DEMOD_FM_OUT_VPP_MV   25U
 #define RX_DEMOD_ASK_OUT_VPP_MV  100U
 #define RX_DEMOD_FSK_OUT_VPP_MV  1000U
 #define RX_DEMOD_PSK_OUT_VPP_MV  100U
@@ -58,6 +59,14 @@
 #define RX_DEMOD_FSK_OUT_OFFSET_MV  0
 #define RX_DEMOD_PSK_OUT_OFFSET_MV  0
 #define RX_DEMOD_ANALOG_REF_VPP_MV 1000U
+/* AM 输出轻微稳幅居中开关：只修正 DAC 波形的慢速上下漂移，不参与 ASK/FSK 增强比较器。 */
+#define RX_AM_OUTPUT_STABILIZE_ENABLE       1U
+/* 块均值跟踪速度：数值越大越慢，越不容易削弱低频调制；数值越小，压住上下漂移越快。 */
+#define RX_AM_OUTPUT_STABILIZE_SHIFT        5U
+/* 小于该 DAC 码值的均值误差不修正，避免稳定环节对微小噪声来回动作。 */
+#define RX_AM_OUTPUT_STABILIZE_DEADBAND_CODE 2
+/* 单次最多修正的 DAC 码值，防止异常块把波形整体拉偏。 */
+#define RX_AM_OUTPUT_STABILIZE_MAX_CODE     96
 
 #define RX_DAC_OPEN_VPP_FROM_LOAD_VPP_MV(vpp_mv) \
     ((((uint32_t)(vpp_mv)) * (RX_DEMOD_SOURCE_OHM + RX_DEMOD_LOAD_OHM) + (RX_DEMOD_LOAD_OHM / 2U)) / RX_DEMOD_LOAD_OHM)
@@ -128,8 +137,8 @@
  * THRESHOLD_CODE 是相对自适应中心的触发幅度，越大越不容易被小毛刺触发。
  * HYST_CODE 是 DAC 码值滞回宽度，越大越不容易在非符号跳变区域误翻转。
  */
-#define RX_ASK_ANALOG_SQUARE_DC_SHIFT   6U
-#define RX_ASK_ANALOG_SQUARE_THRESHOLD_CODE 40
+#define RX_ASK_ANALOG_SQUARE_DC_SHIFT   APP_OCXO_CAL_ASK_SQUARE_DC_SHIFT_DEFAULT
+#define RX_ASK_ANALOG_SQUARE_THRESHOLD_CODE APP_OCXO_CAL_ASK_SQUARE_THRESHOLD_DEFAULT
 #define RX_ASK_ANALOG_SQUARE_HYST_CODE  12
 #define RX_FSK_ANALOG_SQUARE_DC_SHIFT   6U
 #define RX_FSK_ANALOG_SQUARE_THRESHOLD_CODE 0
@@ -198,6 +207,8 @@ static uint32_t g_rx_fsk_separation_hz = 0U;
 static int32_t g_env_dc_q8 = 0;
 static uint8_t g_env_dc_valid = 0U;
 static uint32_t g_am_debug_block_count = 0U;
+static int32_t g_am_output_mean_q8 = 0;
+static uint8_t g_am_output_mean_valid = 0U;
 
 static int32_t g_fm_dc = 0;
 static int32_t g_fm_smooth = 0;
@@ -976,6 +987,66 @@ static uint32_t rx_demod_limit_count(uint32_t n)
     return n;
 }
 
+/* AM 输出慢速居中：按块均值估计整体漂移，再把 DAC 输出轻微拉回目标偏置。 */
+static void rx_am_stabilize_output(uint16_t *dac_out, uint32_t n)
+{
+#if (RX_AM_OUTPUT_STABILIZE_ENABLE != 0U)
+    uint32_t i;
+    uint64_t sum = 0ULL;
+    int32_t block_mean_q8;
+    int32_t target_code = RX_DAC_CENTER_FROM_OFFSET_MV(RX_DEMOD_AM_OUT_OFFSET_MV);
+    int32_t err_code;
+    int32_t correction;
+
+    if ((dac_out == 0U) || (n == 0U))
+    {
+        return;
+    }
+
+    for (i = 0U; i < n; ++i)
+    {
+        sum += dac_out[i];
+    }
+
+    block_mean_q8 = (int32_t)((sum << 8) / (uint64_t)n);
+    if (g_am_output_mean_valid == 0U)
+    {
+        g_am_output_mean_q8 = block_mean_q8;
+        g_am_output_mean_valid = 1U;
+    }
+    else
+    {
+        g_am_output_mean_q8 += rx_shift_round_s32(block_mean_q8 - g_am_output_mean_q8,
+                                                  RX_AM_OUTPUT_STABILIZE_SHIFT);
+    }
+
+    err_code = (g_am_output_mean_q8 - (target_code << 8)) >> 8;
+    if ((err_code > -RX_AM_OUTPUT_STABILIZE_DEADBAND_CODE) &&
+        (err_code < RX_AM_OUTPUT_STABILIZE_DEADBAND_CODE))
+    {
+        return;
+    }
+
+    correction = err_code;
+    if (correction > RX_AM_OUTPUT_STABILIZE_MAX_CODE)
+    {
+        correction = RX_AM_OUTPUT_STABILIZE_MAX_CODE;
+    }
+    else if (correction < -RX_AM_OUTPUT_STABILIZE_MAX_CODE)
+    {
+        correction = -RX_AM_OUTPUT_STABILIZE_MAX_CODE;
+    }
+
+    for (i = 0U; i < n; ++i)
+    {
+        dac_out[i] = rx_clip_to_dac((int32_t)dac_out[i] - correction);
+    }
+#else
+    (void)dac_out;
+    (void)n;
+#endif
+}
+
 /* 对模拟解调输出做自适应中心比较，给数字增强模式输出稳定高低电平。 */
 static void rx_analog_square_from_dac(uint16_t *dac_out,
                                       uint32_t n,
@@ -1039,6 +1110,8 @@ void RxDemod_Reset(void)
 {
     g_env_dc_q8 = 0;
     g_env_dc_valid = 0U;
+    g_am_output_mean_q8 = 0;
+    g_am_output_mean_valid = 0U;
 
     g_fm_dc = 0;
     g_fm_smooth = 0;
@@ -1287,6 +1360,11 @@ void RxDemod_AM_ProcessBlock(const uint16_t *i_adc, const uint16_t *q_adc, uint3
 #endif
     }
 
+    if (g_rx_mode == RX_MODE_AM)
+    {
+        rx_am_stabilize_output(dac_out, n);
+    }
+
 #if (RX_AM_DEBUG_LOG_ENABLE != 0U)
     rx_am_debug_log_block(dc_i,
                           dc_q,
@@ -1452,8 +1530,8 @@ void RxDemod_ASK_AnalogSquare_ProcessBlock(const uint16_t *i_adc,
                               RX_ASK_DAC_LOW,
                               RX_ASK_DAC_HIGH,
                               &g_ask_analog_square_state,
-                              RX_ASK_ANALOG_SQUARE_DC_SHIFT,
-                              RX_ASK_ANALOG_SQUARE_THRESHOLD_CODE,
+                              app_ocxo_cal_get_ask_square_dc_shift(),
+                              (int32_t)app_ocxo_cal_get_ask_square_threshold_code(),
                               RX_ASK_ANALOG_SQUARE_HYST_CODE);
 }
 

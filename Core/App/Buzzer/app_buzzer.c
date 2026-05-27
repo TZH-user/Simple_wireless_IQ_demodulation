@@ -97,3 +97,8 @@ void app_buzzer_notify_demod_start(void)
         app_buzzer_beep_ms(APP_BUZZER_EVENT_BEEP_MS);
     }
 }
+
+void app_buzzer_notify_cal_done(void)
+{
+    app_buzzer_beep_ms(APP_BUZZER_CAL_DONE_BEEP_MS);
+}

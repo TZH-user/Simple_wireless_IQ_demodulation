@@ -107,6 +107,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/BoardFlash/app_board_flash.c
     Core/App/BoardFlash/board_flash_qspi_port.c
     Core/App/BoardFlash/board_flash_w25q64.c
+    Core/App/Wallpaper/app_wallpaper.c
     Core/App/OCXO/app_ocxo_cal.c
     Core/App/Buzzer/app_buzzer.c
 )
@@ -137,6 +138,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Core/App/Analyze
     Core/App/DEMODE
     Core/App/BoardFlash
+    Core/App/Wallpaper
     Core/App/OCXO
     Core/App/Buzzer
 

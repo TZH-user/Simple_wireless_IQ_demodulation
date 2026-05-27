@@ -29,6 +29,8 @@ extern "C" {
 #define APP_OCXO_CAL_AUTO_TASK_DEFAULT_ENABLE 1U
 /* 没有历史设置时，上电默认播放启动动画；UI 里的 ANIM ON/OFF 会写入 Flash，下次上电生效。 */
 #define APP_OCXO_CAL_BOOT_ANIM_DEFAULT_ENABLE 1U
+/* UI 背景图默认关闭；打开后从外部 QSPI 中读取 RGB565 资源。 */
+#define APP_OCXO_CAL_BACKGROUND_DEFAULT_ENABLE 0U
 /* 运行中切频/切调制监测默认关闭；在 SET 菜单打开后写入 Flash 并立即生效。 */
 #define APP_OCXO_CAL_RUNTIME_MONITOR_DEFAULT_ENABLE 0U
 /* ASK 普通=ASK 数字解调；增强=改走 AM 包络解调，适合先验证示波器输出。 */
@@ -49,6 +51,32 @@ extern "C" {
 #define APP_OCXO_CAL_MIXED_RETRY_MAX_COUNT 5U
 /* MIXED 自动重分析无限重试的内部编码，UI 显示为 INF。 */
 #define APP_OCXO_CAL_MIXED_RETRY_INFINITE 255U
+/* ASK 增强模式比较器中心跟踪速度，数值越小跟得越快，越大越稳但响应更慢。 */
+#define APP_OCXO_CAL_ASK_SQUARE_DC_SHIFT_DEFAULT 6U
+/* ASK 中心跟踪速度允许在 UI 中循环调节的下限。 */
+#define APP_OCXO_CAL_ASK_SQUARE_DC_SHIFT_MIN 3U
+/* ASK 中心跟踪速度允许在 UI 中循环调节的上限。 */
+#define APP_OCXO_CAL_ASK_SQUARE_DC_SHIFT_MAX 9U
+/* ASK 增强模式比较器门限，单位是 DAC 码值；越大越不容易被小幅噪声误触发。 */
+#define APP_OCXO_CAL_ASK_SQUARE_THRESHOLD_DEFAULT 40U
+/* ASK 比较器门限 UI 调节下限。 */
+#define APP_OCXO_CAL_ASK_SQUARE_THRESHOLD_MIN 0U
+/* ASK 比较器门限 UI 调节上限。 */
+#define APP_OCXO_CAL_ASK_SQUARE_THRESHOLD_MAX 160U
+/* ASK 比较器门限每次按键增加的 DAC 码值，超过上限后回到下限。 */
+#define APP_OCXO_CAL_ASK_SQUARE_THRESHOLD_STEP 10U
+/* AD9959 全域频率偏移默认值，单位 Hz；保存后所有 DDS 频率下发都会叠加这个偏移。 */
+#define APP_OCXO_CAL_DDS_OFFSET_DEFAULT_HZ 0L
+/* AD9959 全域频率偏移下限，避免一次手动校准把所有输出拉偏太远。 */
+#define APP_OCXO_CAL_DDS_OFFSET_MIN_HZ (-200000L)
+/* AD9959 全域频率偏移上限，当前按手动校准用途限制在 +/-200kHz。 */
+#define APP_OCXO_CAL_DDS_OFFSET_MAX_HZ 200000L
+/* AD9959 频偏细调步进，适合最后贴近目标频率。 */
+#define APP_OCXO_CAL_DDS_OFFSET_STEP_FINE_HZ 1L
+/* AD9959 频偏中调步进，适合常规手动校准。 */
+#define APP_OCXO_CAL_DDS_OFFSET_STEP_MID_HZ 10L
+/* AD9959 频偏粗调步进，适合快速拉近目标频率。 */
+#define APP_OCXO_CAL_DDS_OFFSET_STEP_COARSE_HZ 100L
 
 typedef enum
 {
@@ -70,6 +98,7 @@ typedef struct
     uint8_t flash_loaded;
     uint8_t auto_task_enable;
     uint8_t boot_anim_enable;
+    uint8_t background_enable;
     uint8_t runtime_monitor_enable;
     uint8_t ask_analog_demod_enable;
     uint8_t fsk_analog_demod_enable;
@@ -78,6 +107,11 @@ typedef struct
     uint8_t beep_analyze_done_enable;
     uint8_t beep_demod_start_enable;
     uint8_t mixed_retry_count;
+    uint8_t ask_square_dc_shift;
+    uint16_t ask_square_threshold_code;
+    int32_t dds_offset_hz;
+    int32_t dds_offset_step_hz;
+    uint8_t dds_offset_running;
 } app_ocxo_cal_status_t;
 
 void app_ocxo_cal_init(void);
@@ -93,6 +127,8 @@ uint8_t app_ocxo_cal_get_auto_task_enable(void);
 uint8_t app_ocxo_cal_set_auto_task_enable(uint8_t enable);
 uint8_t app_ocxo_cal_get_boot_anim_enable(void);
 uint8_t app_ocxo_cal_set_boot_anim_enable(uint8_t enable);
+uint8_t app_ocxo_cal_get_background_enable(void);
+uint8_t app_ocxo_cal_set_background_enable(uint8_t enable);
 uint8_t app_ocxo_cal_get_runtime_monitor_enable(void);
 uint8_t app_ocxo_cal_set_runtime_monitor_enable(uint8_t enable);
 uint8_t app_ocxo_cal_get_ask_analog_demod_enable(void);
@@ -109,6 +145,16 @@ uint8_t app_ocxo_cal_get_beep_demod_start_enable(void);
 uint8_t app_ocxo_cal_set_beep_demod_start_enable(uint8_t enable);
 uint8_t app_ocxo_cal_get_mixed_retry_count(void);
 uint8_t app_ocxo_cal_cycle_mixed_retry_count(void);
+uint8_t app_ocxo_cal_get_ask_square_dc_shift(void);
+uint8_t app_ocxo_cal_cycle_ask_square_dc_shift(void);
+uint16_t app_ocxo_cal_get_ask_square_threshold_code(void);
+uint8_t app_ocxo_cal_cycle_ask_square_threshold_code(void);
+void app_ocxo_cal_dds_offset_enter(void);
+void app_ocxo_cal_dds_offset_leave(void);
+void app_ocxo_cal_dds_offset_adjust(int32_t delta_hz);
+void app_ocxo_cal_dds_offset_cycle_step(void);
+uint8_t app_ocxo_cal_save_dds_offset_to_flash(void);
+int32_t app_ocxo_cal_get_dds_offset_hz(void);
 
 #ifdef __cplusplus
 }

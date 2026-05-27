@@ -1,4 +1,5 @@
 #include "app_sdram_test.h"
+#include "../app_memory_map.h"
 #include "main.h"
 
 /*
@@ -7,8 +8,7 @@
  * - 800 * 480 * 2 = 768000 bytes，未超过 1MB
  * - 所以第一版测试先从 0xC0100000 开始，避免和显示区重叠
  */
-#define APP_SDRAM_TEST_BASE              ((uint32_t)0xC0100000UL)
-#define APP_SDRAM_TEST_SIZE_BYTES        (256U * 1024U)
+#define APP_SDRAM_TEST_BASE              ((uint32_t)APP_SDRAM_TEST_ADDR)
 #define APP_SDRAM_TEST_WORD_COUNT        (APP_SDRAM_TEST_SIZE_BYTES / sizeof(uint16_t))
 #define APP_SDRAM_CACHE_LINE_SIZE        32U
 #define APP_SDRAM_RETENTION_DELAY_MS     1000U

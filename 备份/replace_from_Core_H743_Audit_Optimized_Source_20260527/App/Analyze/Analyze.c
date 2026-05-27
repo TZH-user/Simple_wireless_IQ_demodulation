@@ -1,0 +1,2799 @@
+#include "Analyze.h"
+#include <stdint.h>
+#include <stdio.h>
+#include "RtosTypes.h"
+#include "cmsis_os2.h"
+#include "FreeRTOS.h"
+#include "arm_math.h"
+#include "arm_const_structs.h"
+#include <string.h>
+#include <math.h>
+
+#define ANALYZE_DEPTH_BLOCKS 4U
+#define ANALYZE_FFT_N 4096U
+#define ANALYZE_FFT_HALF_N (ANALYZE_FFT_N / 2U)
+#define ANALYZE_SAMPLE_RATE_HZ 2048000U /* FFT 频率换算使用的 ADC 采样率，单位 Hz。 */
+#define ANALYZE_PI_F 3.14159265358979323846f
+#define ANALYZE_TWO_PI_F (2.0f * ANALYZE_PI_F)
+
+#define ANALYZE_IQ_SPECTRUM_ENABLE 1U /* 打开复数 IQ 双边谱，用于区分 CW、FSK、PSK 这类只看包络容易误判的信号。 */
+#define ANALYZE_ENV_SPECTRUM_ENABLE 1U /* 幅度类调制使用包络谱提取调制频率。 */
+#define ANALYZE_FREQ_SPECTRUM_ENABLE 1U /* 频率类调制使用展开相位差分谱提取调制频率。 */
+#define ANALYZE_PHASE_SPECTRUM_ENABLE ANALYZE_FREQ_SPECTRUM_ENABLE
+#define ANALYZE_LOG_ENABLE 1U /* 算法日志总控；置 0 后本文件不向打印队列投递日志。 */
+#define ANALYZE_SPECTRUM_SUMMARY_LOG_ENABLE 1U /* 是否输出每类谱的主峰摘要。 */
+#define ANALYZE_IQ_SPECTRUM_FULL_LOG_ENABLE 1U /* 是否逐 bin 输出 IQ 复数谱。 */
+#define ANALYZE_ENV_SPECTRUM_FULL_LOG_ENABLE 1U /* 是否逐 bin 输出包络谱。 */
+#define ANALYZE_PHASE_SPECTRUM_FULL_LOG_ENABLE 1U /* 是否逐 bin 输出频率类特征谱。 */
+#define ANALYZE_START_LOG_ENABLE 0U /* 是否输出分析启动日志。 */
+#define ANALYZE_DEPTH_LOG_ENABLE 0U /* 是否输出每块包络深度与平均深度日志。 */
+#define ANALYZE_RESULT_LOG_ENABLE 1U /* 是否输出一次性分析完成日志。 */
+#define ANALYZE_SETTLE_BLOCKS 2U
+#define ANALYZE_SETTLE_LOG_ENABLE 0U
+#define ANALYZE_BASEBAND_SPECTRUM_ENABLE 1U /* 是否缓存 Analyze 后的 ±200kHz 简易基带谱，供 UI 或调试读取。 */
+#define ANALYZE_BASEBAND_SPECTRUM_LOG_ENABLE 0U /* 是否串口逐点输出 bbsp；默认关闭，避免数据集采集被 801 行谱拖慢。 */
+#define ANALYZE_BASEBAND_SPECTRUM_START_HZ (-200000L)
+#define ANALYZE_BASEBAND_SPECTRUM_STEP_HZ 500UL
+
+#define ANALYZE_LOW_IF_EST_ENABLE 1U /* 低中频偏置估计开关，用于观察混频后距离 DC 的残余频偏。 */
+#define ANALYZE_MOD_MIN_FREQ_HZ 500U /* 忽略直流和 1 个 bin 以下的慢漂移，4096 点 FFT 下频率分辨率约 500Hz。 */
+#define ANALYZE_MOD_MAX_FREQ_HZ 200000U /* 先只判断 200kHz 内的低频调制特征，避免高频杂散误判。 */
+#define ANALYZE_AM_DEPTH_MIN_PM 50U /* 包络深度超过 5% 时才认为幅度类特征有效。 */
+#define ANALYZE_ENV_SCORE_MIN_PM 3000U /* 包络谱主峰至少约为谱均值 3 倍。 */
+#define ANALYZE_FREQ_SCORE_MIN_PM 3000U /* 频率类谱主峰至少约为谱均值 3 倍。 */
+#define ANALYZE_MODE_SCORE_DOMINANCE_PM 1500U /* 两类特征同时存在时，1.5 倍以上才判为单一类型。 */
+#define ANALYZE_SCORE_PM_MAX 999999U
+
+#define ANALYZE_IQ_TOP_PEAK_COUNT 8U /* 复数 IQ 谱保留的强峰个数；增大可看更多杂散，但会增加判别复杂度。 */
+#define ANALYZE_IQ_PEAK_MIN_SEP_HZ 1200U /* 复数 IQ 谱两个峰至少隔这么远才算不同峰，避免同一宽峰被重复计数。 */
+#define ANALYZE_IQ_STRONG_PEAK_REL_PM 200U /* 复数 IQ 谱强峰门限：达到主峰 20% 以上才参与强峰数量统计。 */
+#define ANALYZE_IQ_OCC_REL_PM 120U /* 粗略占用带宽门限：达到主峰 12% 以上的频点参与带宽估计。 */
+#define ANALYZE_CW_DEPTH_MAX_PM 1200U /* 包络起伏低于约 12% 时，才允许判为 CW。 */
+#define ANALYZE_CW_OCC_MAX_HZ 12000U /* 复数 IQ 谱占用带宽低于该值时更像单载波 CW。 */
+#define ANALYZE_ENV_STRONG_PEAK_REL_PM 200U /* 包络/频率谱强峰计数门限：达到主峰 20% 以上才算强峰。 */
+#define ANALYZE_ENV_TONE_BINS 2U /* 包络主峰左右各取几个 bin 估计窄带占比；越大越容易把宽带 ASK 看成 AM。 */
+#define ANALYZE_AM_ENV_MIN_FREQ_HZ 3000U /* 低于 3kHz 的包络峰多为慢漂移或锁频残差，不参与 AM/ASK 主判据。 */
+#define ANALYZE_AM_ENV_TONE_MIN_PM 420U /* 包络主峰附近能量占比超过该值时，才认为像 AM 单音包络。 */
+#define ANALYZE_AM_ENV_PEAK_COUNT_MAX 3U /* AM 的包络谱强峰不应太多；过多更像 ASK/数字包络。 */
+#define ANALYZE_FM_FREQ_ENV_DOMINANCE_PM 1800U /* 频率谱分数至少为包络谱 1.8 倍时，才按 FM 优先判定。 */
+#define ANALYZE_FM_RESCUE_IQ_OCC99_MIN_HZ 100000U /* 仅当 IQ 99% 带宽足够宽时，才启用 FM 防 PSK 抢判规则。 */
+#define ANALYZE_FM_RESCUE_ENV_IQ_RATIO_MAX_PM 220U /* FM 包络相对 IQ 主峰应较弱，避免影响 ASK/AM。 */
+#define ANALYZE_FM_RESCUE_MOD_MIN_HZ 3000U /* FM 防抢判规则的调制频率下限。 */
+#define ANALYZE_FM_RESCUE_MOD_MAX_HZ 50000U /* FM 防抢判规则的调制频率上限，避免高频杂散触发。 */
+#define ANALYZE_FM_RESCUE_COMB_TOL_HZ 2000U /* FM 多边带梳状峰允许偏差；调大更容易保护 FM，但过大会误吃 PSK。 */
+#define ANALYZE_FM_RESCUE_COMB_MIN_COUNT 4U /* 至少几个 IQ 强峰落在 low_if ± n*fmod 上，才认为是 FM 多边带。 */
+#define ANALYZE_FSK_PEAK_BALANCE_MIN_PM 450U /* FSK 双主峰较接近；第二峰至少达到第一峰 45%。 */
+#define ANALYZE_FSK_THIRD_PEAK_MAX_PM 700U /* 第三峰相对第二峰不应太强，否则不像干净 2FSK。 */
+#define ANALYZE_FSK_LOW_DEPTH_THIRD_IGNORE_PM 600U /* 包络深度低于该值时，FSK 的第三强峰多为残留载波/镜像，不再直接否决 FSK。 */
+#define ANALYZE_FSK_MIN_SEP_HZ 5000U /* 两个 FSK 主峰频差下限，低于该值当前 4096 点分辨率下不稳定。 */
+#define ANALYZE_FSK_MAX_SEP_HZ 160000U /* 两个 FSK 主峰频差上限，超过后更可能是杂散或多信号。 */
+#define ANALYZE_DIGITAL_OCC_MIN_HZ 15000U /* 复数 IQ 谱宽于该值时，才考虑 PSK/弱 FSK 等数字宽带信号。 */
+#define ANALYZE_DIGITAL_PEAK_COUNT_MIN 3U /* 宽带数字调制通常有多个强峰；低于该值不轻易判 PSK。 */
+#define ANALYZE_ASK_DEPTH_MIN_PM 700U /* ASK 应有明显包络起伏；低于该值的宽带数字信号优先考虑 PSK/FSK。 */
+#define ANALYZE_PSK_DEPTH_MAX_PM 2500U /* PSK 包络理论上较平，低于该值且 IQ 谱较宽时优先判 PSK。 */
+#define ANALYZE_DIGITAL_RATE_TARGET_HZ 10000U /* 当前板上 ASK/FSK 测试的标称码率/频率特征，主要用于区分 ASK/FSK。 */
+#define ANALYZE_DIGITAL_RATE_TOL_HZ 2500U /* 判断 10kHz 特征时允许的偏差，过小会受 4096 点 FFT 分辨率影响。 */
+#define ANALYZE_ASK_ENV_IQ_RATIO_MIN_PM 300U /* 包络主峰超过 IQ 主峰 30% 时，才认为是强包络 ASK。 */
+#define ANALYZE_ASK_IQ_OCC99_MIN_HZ 80000U /* ASK 的 IQ 谱通常比 FSK 更宽，低于该值不优先判 ASK。 */
+#define ANALYZE_FSK_IQ_OCC99_MAX_HZ 60000U /* FSK 的 IQ 谱应较紧凑，超过该值优先让给 PSK/ASK。 */
+#define ANALYZE_FSK_ENV_IQ_RATIO_MAX_PM 200U /* FSK 包络相对 IQ 主峰应较弱，高于该值更像 ASK。 */
+#define ANALYZE_PSK_IQ_OCC99_MIN_HZ 100000U /* PSK 的 IQ 谱应明显宽于 FSK，低于该值不靠宽带规则判 PSK。 */
+#define ANALYZE_IQ_OCC99_PM 990U /* 复数 IQ 谱累计 99% 能量占用带宽，用于稳定区分 FSK 紧凑谱和 PSK 宽谱。 */
+#define ANALYZE_LOCK_GATE_ENABLE 1U /* 锁定质量门限开关；仅在外部设置 expected_center_hz 后生效，不在本文件硬编码测试频点。 */
+#define ANALYZE_LOCK_CENTER_MAX_ERR_HZ 350000UL /* 目标中心与实际分析中心相差超过该值时输出 UNKNOWN。 */
+#define ANALYZE_RESCUE_ENABLE 1U /* baseline 分类完成后叠加保守 rescue，改善 ASK/FSK2 边界样本。 */
+#define ANALYZE_FIXED_IF_HZ 5000U /* 当前接收链路期望低 IF，单位 Hz。 */
+#define ANALYZE_FIXED_IF_TOL_HZ 1800U /* 低 IF 容差；用于 AM/FM 等窄带 rescue。 */
+#define ANALYZE_AM_RESCUE_LOW_IF_MIN_HZ 3500U /* AM rescue 允许的低 IF 下限。 */
+#define ANALYZE_AM_RESCUE_LOW_IF_MAX_HZ 6500U /* AM rescue 允许的低 IF 上限。 */
+#define ANALYZE_AM_RESCUE_ENV_TONE_MIN_PM 420U /* AM rescue 要求包络谱主峰附近能量占比。 */
+#define ANALYZE_AM_RESCUE_ENV_PEAK_COUNT_MAX 3U /* AM rescue 要求包络强峰数量不要过多。 */
+#define ANALYZE_AM_IQ99_MAX_HZ 60000U /* AM 只能吃较窄的 IQ 谱；调大更容易把宽带 ASK 误判成 AM。 */
+#define ANALYZE_AM_ENV_SECOND_MAX_PM 180U /* AM 包络第二峰相对主峰上限；调大更宽松，调小更保护 ASK。 */
+#define ANALYZE_AM_DEPTH_MAX_PM 900U /* AM 深度上限；过深且包络多峰时更像 ASK。 */
+#define ANALYZE_ASK_RESCUE_DEPTH_MIN_PM 550U /* ASK rescue 的包络深度下限；调低更容易救低电平 ASK，也更容易误吃 AM/PSK。 */
+#define ANALYZE_ASK_RESCUE_ENV_IQ_STRONG_PM 320U /* ASK rescue 强包络门限。 */
+#define ANALYZE_ASK_RESCUE_ENV_IQ_WEAK_PM 220U /* ASK rescue 弱包络门限，需配合深度和码率候选。 */
+#define ANALYZE_ASK_RESCUE_ENV_FREQ_MAX_HZ 25000U /* ASK rescue 允许 2/5/10/20ksym/s 及其近邻特征。 */
+#define ANALYZE_ASK_RESCUE_IQ99_MIN_HZ 80000U /* 低电平 ASK rescue 需要 IQ 谱足够宽，避免抢普通 AM。 */
+#define ANALYZE_ASK_RESCUE_ENV_SECOND_MIN_PM 220U /* 包络第二峰达到主峰约 22% 时，说明更像数据包络而不是单音 AM。 */
+#define ANALYZE_FSK_RESCUE_SEP_MIN_HZ 15000U /* FSK rescue 两主峰间隔下限。 */
+#define ANALYZE_FSK_RESCUE_SEP_MAX_HZ 70000U /* FSK rescue 两主峰间隔上限。 */
+#define ANALYZE_FSK_RESCUE_ENV_IQ_MAX_PM 170U /* FSK rescue 包络相对 IQ 的上限，避免抢 ASK。 */
+#define ANALYZE_FSK_RESCUE_DEPTH_MAX_PM 650U /* FSK rescue 包络深度上限，避免强 ASK 被救成 FSK。 */
+#define ANALYZE_FSK_RESCUE_BALANCE_MIN_PM 350U /* FSK rescue 两主峰平衡度下限。 */
+#define ANALYZE_FSK_RESCUE_THIRD_MAX_PM 850U /* FSK rescue 第三峰相对第二峰上限。 */
+#define ANALYZE_BPSK_RESCUE_DEPTH_MIN_PM 700U /* BPSK 低速救援深度下限，仅用于 UNKNOWN/CW/FSK 边界。 */
+#define ANALYZE_BPSK_RESCUE_ENV_IQ_MAX_PM 130U /* BPSK rescue 包络相对 IQ 上限，避免破坏 ASK。 */
+#define ANALYZE_BPSK_RESCUE_IQ99_MAX_HZ 45000U /* BPSK 低速 rescue 的 IQ 99% 带宽上限。 */
+#define ANALYZE_PARAM_HIST_BIN_COUNT 96U /* 参数估计用近似分位数直方图；越大越准，但会增加少量运算。 */
+#define ANALYZE_PARAM_CONF_MAX_PM 1000U /* 参数可信度显示上限，单位千分比。 */
+#define ANALYZE_MODE_COUNT 8U
+
+static uint16_t g_analyze_i_raw[ANALYZE_FFT_N];
+static uint16_t g_analyze_q_raw[ANALYZE_FFT_N];
+
+typedef struct
+{
+    uint32_t bin;
+    uint32_t freq_hz;
+    float mag;
+    float phase;
+    float mean_mag;
+    uint32_t score_pm;
+} analyze_spectrum_peak_t;
+
+typedef struct
+{
+    uint32_t bin;
+    int32_t freq_hz;
+    float mag;
+} analyze_iq_peak_t;
+
+typedef struct
+{
+    analyze_iq_peak_t peaks[ANALYZE_IQ_TOP_PEAK_COUNT];
+    uint8_t peak_count;
+    uint8_t strong_peak_count;
+    uint32_t occ_hz;
+    uint32_t occ99_hz;
+    uint32_t score_pm;
+    uint32_t fsk_sep_hz;
+    uint32_t fsk_balance_pm;
+    uint32_t third_to_second_pm;
+} analyze_iq_features_t;
+
+typedef struct
+{
+    analyze_mode_t mode;
+    uint32_t mod_hz;
+    uint32_t confidence_pm;
+    uint8_t reason;
+} analyze_block_decision_t;
+
+typedef enum
+{
+    ANALYZE_REASON_NONE = 0,
+    ANALYZE_REASON_CW,
+    ANALYZE_REASON_FM_PHASE,
+    ANALYZE_REASON_AM_TONE,
+    ANALYZE_REASON_FSK_STRONG,
+    ANALYZE_REASON_FSK_WEAK,
+    ANALYZE_REASON_ASK_ENV,
+    ANALYZE_REASON_PSK_WIDE,
+    ANALYZE_REASON_MIXED,
+    ANALYZE_REASON_LOCK_BAD,
+    ANALYZE_REASON_AM_RESCUE,
+    ANALYZE_REASON_FM_RESCUE,
+    ANALYZE_REASON_FSK_RESCUE,
+    ANALYZE_REASON_ASK_RESCUE,
+    ANALYZE_REASON_BPSK_RESCUE
+} analyze_reason_t;
+
+
+typedef struct
+{
+    uint8_t active;         /* active == 0 && done == 0：表示还没开始分析 */
+    uint8_t done;           /* active == 0 && done == 1：表示已经分析完成 */
+    uint8_t settle_left;    /* active == 1 && done == 0：表示正在分析 */
+    uint8_t vote_count;
+    uint32_t center_hz;
+    analyze_mode_t mode;
+    uint32_t mod_hz;
+    uint32_t depth_pm;
+    uint32_t depth_sum_pm;
+    uint8_t amp_vote_count;
+    uint8_t freq_vote_count;
+    uint8_t quiet_vote_count;
+    uint8_t mode_vote_count[ANALYZE_MODE_COUNT];
+    uint32_t mode_confidence_sum[ANALYZE_MODE_COUNT];
+    uint32_t amp_mod_sum_hz;
+    uint32_t freq_mod_sum_hz;
+    uint32_t env_score_pm;
+    uint32_t freq_score_pm;
+    uint32_t env_peak_hz;
+    uint32_t freq_peak_hz;
+    uint32_t iq_occ_hz;
+    uint32_t iq_occ99_hz;
+    uint32_t iq_score_pm;
+    uint32_t env_iq_ratio_pm;
+    uint32_t fsk_sep_hz;
+    uint32_t am_depth_pm;
+    uint32_t ask_depth_pm;
+    uint32_t fm_deviation_hz;
+    uint32_t fsk_separation_hz;
+    uint32_t symbol_rate_hz;
+    uint32_t am_depth_sum_pm;
+    uint32_t ask_depth_sum_pm;
+    uint32_t fm_deviation_sum_hz;
+    uint32_t fsk_sep_sum_hz;
+    uint32_t symbol_rate_sum_hz;
+    uint32_t param_confidence_sum_pm;
+    uint16_t param_valid_mask;
+    uint16_t param_confidence_pm;
+    uint8_t am_depth_count;
+    uint8_t ask_depth_count;
+    uint8_t fm_deviation_count;
+    uint8_t fsk_sep_count;
+    uint8_t symbol_rate_count;
+    uint8_t param_confidence_count;
+    uint8_t result_reason;
+    int32_t low_if_hz;
+    int32_t low_if_sum_hz;
+} analyze_state_t;
+
+typedef struct
+{
+    uint8_t result_pending;    /* 分析完成结果日志等待发送。 */
+    uint8_t depth_avg_pending; /* 平均包络深度日志等待发送。 */
+    uint8_t bbsp_pending;      /* 简易基带谱日志等待发送；默认宏关闭时不会置位。 */
+    uint8_t summary_stage;     /* 频谱摘要慢速发送阶段：0空闲，1 IQ，2 包络，3 频率类。 */
+    uint8_t full_stage;        /* 全量频谱慢速发送阶段：0空闲，1 IQ，2 包络，3 频率类。 */
+    uint8_t format_pending;    /* 频谱输出完成后的格式说明日志等待发送。 */
+    uint32_t full_bin;         /* 当前全量频谱发送到的 bin。 */
+    uint16_t bbsp_index;       /* 当前 bbsp 发送到的点。 */
+} analyze_log_state_t;
+
+static analyze_state_t g_analyze;
+static analyze_log_state_t g_analyze_log;
+static uint8_t g_fft_ready;
+static uint32_t g_expected_center_hz;
+static analyze_iq_features_t g_iq_features;
+static analyze_spectrum_peak_t g_iq_peak;
+static analyze_spectrum_peak_t g_env_peak;
+static analyze_spectrum_peak_t g_phase_peak;
+static uint8_t g_env_peak_count;
+static uint8_t g_phase_peak_count;
+static uint32_t g_env_tone_fraction_pm;
+static uint32_t g_env_second_ratio_pm;
+static uint32_t g_env_third_ratio_pm;
+static uint32_t g_block_am_depth_pm;
+static uint32_t g_block_ask_depth_pm;
+static uint32_t g_block_fm_deviation_hz;
+static uint16_t g_param_hist[ANALYZE_PARAM_HIST_BIN_COUNT];
+
+static arm_rfft_fast_instance_f32 g_env_fft_inst;
+static arm_rfft_fast_instance_f32 g_phase_fft_inst;
+
+__attribute__((section(".ram_d1_buffer")))
+static float g_i_buf[ANALYZE_FFT_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_q_buf[ANALYZE_FFT_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_env_buf[ANALYZE_FFT_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_freq_dev_buf[ANALYZE_FFT_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_phase_unwrap_buf[ANALYZE_FFT_N];
+#if (ANALYZE_IQ_SPECTRUM_ENABLE != 0U)
+__attribute__((section(".ram_d1_buffer")))
+static float g_iq_cfft_buf[ANALYZE_FFT_N * 2U];
+#endif
+__attribute__((section(".ram_d1_buffer")))
+static float g_env_rfft_buf[ANALYZE_FFT_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_phase_rfft_buf[ANALYZE_FFT_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_iq_spec_mag[ANALYZE_FFT_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_iq_spec_phase[ANALYZE_FFT_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_env_spec_mag[ANALYZE_FFT_HALF_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_env_spec_phase[ANALYZE_FFT_HALF_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_phase_spec_mag[ANALYZE_FFT_HALF_N];
+__attribute__((section(".ram_d1_buffer")))
+static float g_phase_spec_phase[ANALYZE_FFT_HALF_N];
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+static int16_t g_baseband_spec_db_x10[ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT];
+static uint8_t g_baseband_spec_valid;
+#endif
+
+static float cumsum_mean(const uint16_t *buf, uint32_t sample_cnt, uint8_t step)
+{
+    float mean = 0.0f;
+    uint32_t count = 0U;
+
+    if ((buf == NULL) || (sample_cnt == 0U) || (step == 0U))    return 0.0f;
+
+    for (uint32_t k = 0; k < sample_cnt; k += step)
+    {
+        mean += (float)buf[k];
+        count++;
+    }
+
+    if (count == 0U) return 0.0f;
+
+    return mean / (float)count;
+}
+
+static uint8_t analyze_fft_init_once(void)
+{
+    if (g_fft_ready != 0U)
+    {
+        return 1U;
+    }
+
+#if (ANALYZE_ENV_SPECTRUM_ENABLE != 0U)
+    if (arm_rfft_fast_init_f32(&g_env_fft_inst, ANALYZE_FFT_N) != ARM_MATH_SUCCESS)
+    {
+        return 0U;
+    }
+#endif
+
+#if (ANALYZE_FREQ_SPECTRUM_ENABLE != 0U)
+    if (arm_rfft_fast_init_f32(&g_phase_fft_inst, ANALYZE_FFT_N) != ARM_MATH_SUCCESS)
+    {
+        return 0U;
+    }
+#endif
+
+    g_fft_ready = 1U;
+    return 1U;
+}
+
+static uint32_t analyze_bin_to_hz(uint32_t bin)
+{
+    return (uint32_t)((((uint64_t)bin * ANALYZE_SAMPLE_RATE_HZ) + (ANALYZE_FFT_N / 2U)) / ANALYZE_FFT_N);
+}
+
+static uint32_t analyze_mag_to_u32(float mag)
+{
+    if (mag <= 0.0f)
+    {
+        return 0U;
+    }
+
+    return (uint32_t)(mag + 0.5f);
+}
+
+static uint8_t analyze_mod_bin_is_valid(uint32_t bin)
+{
+    uint32_t freq_hz = analyze_bin_to_hz(bin);
+
+    return ((freq_hz >= ANALYZE_MOD_MIN_FREQ_HZ) &&
+            (freq_hz <= ANALYZE_MOD_MAX_FREQ_HZ)) ? 1U : 0U;
+}
+
+static uint32_t analyze_peak_score_pm(float peak_mag, float mean_mag)
+{
+    float score;
+
+    if ((peak_mag <= 0.0f) || (mean_mag <= 0.000001f))
+    {
+        return 0U;
+    }
+
+    score = (peak_mag * 1000.0f) / mean_mag;
+    if (score >= (float)ANALYZE_SCORE_PM_MAX)
+    {
+        return ANALYZE_SCORE_PM_MAX;
+    }
+
+    return (uint32_t)(score + 0.5f);
+}
+
+static int32_t analyze_rad_step_to_hz(float rad_step)
+{
+    float freq_hz = (rad_step * (float)ANALYZE_SAMPLE_RATE_HZ) / ANALYZE_TWO_PI_F;
+
+    if (freq_hz >= 0.0f)
+    {
+        return (int32_t)(freq_hz + 0.5f);
+    }
+
+    return (int32_t)(freq_hz - 0.5f);
+}
+
+static int32_t analyze_average_i32(int32_t sum, uint8_t count)
+{
+    if (count == 0U)
+    {
+        return 0;
+    }
+
+    if (sum >= 0)
+    {
+        return (sum + ((int32_t)count / 2)) / (int32_t)count;
+    }
+
+    return (sum - ((int32_t)count / 2)) / (int32_t)count;
+}
+
+static uint32_t analyze_depth_from_hi_lo(float hi, float lo)
+{
+    if ((hi + lo) <= 1.0f)
+    {
+        return 0U;
+    }
+
+    if (hi < lo)
+    {
+        float tmp = hi;
+        hi = lo;
+        lo = tmp;
+    }
+
+    return (uint32_t)(((hi - lo) * 1000.0f) / (hi + lo));
+}
+
+/* 用小直方图估计分位数，避免为 4096 点参数估计引入排序开销。 */
+static float analyze_percentile_from_float_buf(const float *buf,
+                                               uint32_t count,
+                                               float min_value,
+                                               float max_value,
+                                               uint32_t percentile_pm)
+{
+    uint32_t target_count;
+    uint32_t running_count = 0U;
+
+    if ((buf == NULL) || (count == 0U))
+    {
+        return 0.0f;
+    }
+
+    if (max_value <= min_value)
+    {
+        return min_value;
+    }
+
+    memset(g_param_hist, 0, sizeof(g_param_hist));
+    for (uint32_t idx = 0U; idx < count; idx++)
+    {
+        float value = buf[idx];
+        uint32_t bin;
+
+        if (value <= min_value)
+        {
+            bin = 0U;
+        }
+        else if (value >= max_value)
+        {
+            bin = ANALYZE_PARAM_HIST_BIN_COUNT - 1U;
+        }
+        else
+        {
+            bin = (uint32_t)(((value - min_value) *
+                              (float)(ANALYZE_PARAM_HIST_BIN_COUNT - 1U)) /
+                             (max_value - min_value));
+        }
+
+        g_param_hist[bin]++;
+    }
+
+    target_count = (uint32_t)(((uint64_t)(count - 1U) * percentile_pm) / 1000ULL) + 1U;
+    for (uint32_t bin = 0U; bin < ANALYZE_PARAM_HIST_BIN_COUNT; bin++)
+    {
+        running_count += g_param_hist[bin];
+        if (running_count >= target_count)
+        {
+            return min_value + (((max_value - min_value) * (float)bin) /
+                                (float)(ANALYZE_PARAM_HIST_BIN_COUNT - 1U));
+        }
+    }
+
+    return max_value;
+}
+
+static uint16_t analyze_limit_param_confidence(uint32_t confidence_pm)
+{
+    if (confidence_pm > ANALYZE_PARAM_CONF_MAX_PM)
+    {
+        return (uint16_t)ANALYZE_PARAM_CONF_MAX_PM;
+    }
+
+    return (uint16_t)confidence_pm;
+}
+
+static const char *analyze_mode_to_text(analyze_mode_t mode)
+{
+    switch (mode)
+    {
+    case ANALYZE_MODE_CW:
+        return "CW";
+    case ANALYZE_MODE_AM:
+        return "AM";
+    case ANALYZE_MODE_ASK:
+        return "ASK";
+    case ANALYZE_MODE_FM:
+        return "FM";
+    case ANALYZE_MODE_MIXED:
+        return "MIXED";
+    case ANALYZE_MODE_FSK:
+        return "FSK";
+    case ANALYZE_MODE_PSK:
+        return "PSK";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void analyze_log_send(const char *text)
+{
+#if (ANALYZE_LOG_ENABLE != 0U)
+    print_queue_send(text);
+#else
+    (void)text;
+#endif
+}
+
+static int32_t analyze_phase_to_mrad(float phase)
+{
+    if (phase >= 0.0f)
+    {
+        return (int32_t)((phase * 1000.0f) + 0.5f);
+    }
+
+    return (int32_t)((phase * 1000.0f) - 0.5f);
+}
+
+static void analyze_log_spectrum_point(uint8_t spec_id,
+                                       uint32_t freq_hz,
+                                       float mag,
+                                       float phase,
+                                       uint32_t bin)
+{
+    char log_buf[96];
+    int32_t phase_mrad = analyze_phase_to_mrad(phase);
+    uint32_t phase_abs = (phase_mrad < 0) ? (uint32_t)(-phase_mrad) : (uint32_t)phase_mrad;
+    int n = snprintf(log_buf,
+                     sizeof(log_buf),
+                     "spec:%lu,%lu,%s%lu.%03lu,%lu,%u\r\n",
+                     (unsigned long)freq_hz,
+                     (unsigned long)analyze_mag_to_u32(mag),
+                     (phase_mrad < 0) ? "-" : "",
+                     (unsigned long)(phase_abs / 1000U),
+                     (unsigned long)(phase_abs % 1000U),
+                     (unsigned long)bin,
+                     (unsigned int)spec_id);
+
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        analyze_log_send(log_buf);
+    }
+
+    n = snprintf(log_buf,
+                 sizeof(log_buf),
+                 "analyze:r3 am_depth=%lu ask_depth=%lu fm_dev=%lu fsk_sep=%lu sym=%lu pmask=0x%04X pconf=%u\r\n",
+                 (unsigned long)g_analyze.am_depth_pm,
+                 (unsigned long)g_analyze.ask_depth_pm,
+                 (unsigned long)g_analyze.fm_deviation_hz,
+                 (unsigned long)g_analyze.fsk_separation_hz,
+                 (unsigned long)g_analyze.symbol_rate_hz,
+                 (unsigned int)g_analyze.param_valid_mask,
+                 (unsigned int)g_analyze.param_confidence_pm);
+
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        analyze_log_send(log_buf);
+    }
+}
+
+static void analyze_log_spectrum_summary(uint8_t spec_id, const analyze_spectrum_peak_t *peak)
+{
+    if (peak == NULL)
+    {
+        return;
+    }
+
+    analyze_log_spectrum_point(spec_id, peak->freq_hz, peak->mag, peak->phase, peak->bin);
+}
+
+static void analyze_log_spectrum_format_line(void)
+{
+    analyze_log_send("format:ch0=freq_hz,ch1=mag,ch2=phase_rad,ch3=bin,ch4=spec_id(1=iq,2=env,3=freq)\r\n");
+}
+
+static void analyze_log_result(void)
+{
+    char log_buf[192];
+    int n = snprintf(log_buf,
+                     sizeof(log_buf),
+                     "analyze:r0 center=%lu low_if=%ld mode=%s mod=%lu depth=%lu\r\n",
+                     (unsigned long)g_analyze.center_hz,
+                     (long)g_analyze.low_if_hz,
+                     analyze_mode_to_text(g_analyze.mode),
+                     (unsigned long)g_analyze.mod_hz,
+                     (unsigned long)g_analyze.depth_pm);
+
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        analyze_log_send(log_buf);
+    }
+
+    n = snprintf(log_buf,
+                 sizeof(log_buf),
+                 "analyze:r1 iq99=%lu env_iq=%lu env=%lu/%lu freq=%lu/%lu fsk=%lu\r\n",
+                     (unsigned long)g_analyze.iq_occ99_hz,
+                     (unsigned long)g_analyze.env_iq_ratio_pm,
+                     (unsigned long)g_analyze.env_peak_hz,
+                     (unsigned long)g_analyze.env_score_pm,
+                     (unsigned long)g_analyze.freq_peak_hz,
+                     (unsigned long)g_analyze.freq_score_pm,
+                 (unsigned long)g_analyze.fsk_sep_hz);
+
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        analyze_log_send(log_buf);
+    }
+
+    n = snprintf(log_buf,
+                 sizeof(log_buf),
+                 "analyze:r2 votes=%u/%u/%u/%u/%u/%u/%u/%u reason=%u\r\n",
+                      (unsigned int)g_analyze.mode_vote_count[ANALYZE_MODE_CW],
+                      (unsigned int)g_analyze.mode_vote_count[ANALYZE_MODE_AM],
+                      (unsigned int)g_analyze.mode_vote_count[ANALYZE_MODE_ASK],
+                     (unsigned int)g_analyze.mode_vote_count[ANALYZE_MODE_FM],
+                     (unsigned int)g_analyze.mode_vote_count[ANALYZE_MODE_FSK],
+                     (unsigned int)g_analyze.mode_vote_count[ANALYZE_MODE_PSK],
+                     (unsigned int)g_analyze.mode_vote_count[ANALYZE_MODE_MIXED],
+                     (unsigned int)g_analyze.mode_vote_count[ANALYZE_MODE_UNKNOWN],
+                 (unsigned int)g_analyze.result_reason);
+
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        analyze_log_send(log_buf);
+    }
+}
+
+static void analyze_log_depth_avg(void)
+{
+    char log_buf[96];
+    int n = snprintf(log_buf,
+                     sizeof(log_buf),
+                     "analyze: depth_avg=%lupm\r\n",
+                     (unsigned long)g_analyze.depth_pm);
+
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        analyze_log_send(log_buf);
+    }
+}
+
+static void analyze_update_peak(analyze_spectrum_peak_t *peak,
+                                uint32_t bin,
+                                float mag,
+                                float phase)
+{
+    if ((peak == NULL) || (bin == 0U))
+    {
+        return;
+    }
+
+    if ((peak->bin == 0U) || (mag > peak->mag))
+    {
+        peak->bin = bin;
+        peak->freq_hz = analyze_bin_to_hz(bin);
+        peak->mag = mag;
+        peak->phase = phase;
+    }
+}
+
+static void analyze_update_mod_peak(analyze_spectrum_peak_t *peak,
+                                    uint32_t bin,
+                                    float mag,
+                                    float phase)
+{
+    if (analyze_mod_bin_is_valid(bin) == 0U)
+    {
+        return;
+    }
+
+    analyze_update_peak(peak, bin, mag, phase);
+}
+
+static int32_t analyze_iq_bin_to_signed_hz(uint32_t bin)
+{
+    if (bin <= ANALYZE_FFT_HALF_N)
+    {
+        return (int32_t)analyze_bin_to_hz(bin);
+    }
+
+    return -(int32_t)analyze_bin_to_hz(ANALYZE_FFT_N - bin);
+}
+
+static uint32_t analyze_abs_i32(int32_t value)
+{
+    return (value < 0) ? (uint32_t)(-value) : (uint32_t)value;
+}
+
+static uint32_t analyze_abs_diff_i32(int32_t a, int32_t b)
+{
+    return (a >= b) ? (uint32_t)(a - b) : (uint32_t)(b - a);
+}
+
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+static uint32_t analyze_signed_hz_to_iq_bin(int32_t freq_hz)
+{
+    uint32_t abs_hz = analyze_abs_i32(freq_hz);
+    uint32_t bin = (abs_hz + (ANALYZE_BASEBAND_SPECTRUM_STEP_HZ / 2UL)) /
+                   ANALYZE_BASEBAND_SPECTRUM_STEP_HZ;
+
+    if (bin > ANALYZE_FFT_HALF_N)
+    {
+        bin = ANALYZE_FFT_HALF_N;
+    }
+
+    if (freq_hz < 0)
+    {
+        return (bin == 0U) ? 0U : (ANALYZE_FFT_N - bin);
+    }
+
+    return bin;
+}
+
+/* 缓存 Analyze 完成后的双边基带谱，频率顺序固定为 -200kHz 到 +200kHz。 */
+static void analyze_update_baseband_spectrum(void)
+{
+    float peak_mag = 0.0f;
+    uint16_t idx;
+
+    for (idx = 0U; idx < ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT; idx++)
+    {
+        int32_t freq_hz = ANALYZE_BASEBAND_SPECTRUM_START_HZ +
+                          ((int32_t)idx * (int32_t)ANALYZE_BASEBAND_SPECTRUM_STEP_HZ);
+        uint32_t bin = analyze_signed_hz_to_iq_bin(freq_hz);
+        float mag = g_iq_spec_mag[bin];
+
+        if (mag > peak_mag)
+        {
+            peak_mag = mag;
+        }
+    }
+
+    if (peak_mag <= 0.0f)
+    {
+        memset(g_baseband_spec_db_x10, 0, sizeof(g_baseband_spec_db_x10));
+        g_baseband_spec_valid = 0U;
+        return;
+    }
+
+    for (idx = 0U; idx < ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT; idx++)
+    {
+        int32_t freq_hz = ANALYZE_BASEBAND_SPECTRUM_START_HZ +
+                          ((int32_t)idx * (int32_t)ANALYZE_BASEBAND_SPECTRUM_STEP_HZ);
+        uint32_t bin = analyze_signed_hz_to_iq_bin(freq_hz);
+        float ratio = g_iq_spec_mag[bin] / peak_mag;
+        int32_t db_x10;
+
+        if (ratio < 0.000001f)
+        {
+            ratio = 0.000001f;
+        }
+
+        db_x10 = (int32_t)(200.0f * log10f(ratio));
+        if (db_x10 < -1200L)
+        {
+            db_x10 = -1200L;
+        }
+        if (db_x10 > 0L)
+        {
+            db_x10 = 0L;
+        }
+        g_baseband_spec_db_x10[idx] = (int16_t)db_x10;
+    }
+
+    g_baseband_spec_valid = 1U;
+}
+#endif
+
+static uint8_t analyze_near_u32(uint32_t value_hz, uint32_t target_hz, uint32_t tol_hz)
+{
+    uint32_t diff_hz = (value_hz >= target_hz) ? (value_hz - target_hz) : (target_hz - value_hz);
+
+    return (diff_hz <= tol_hz) ? 1U : 0U;
+}
+
+static uint8_t analyze_near_any_digital_rate(uint32_t value_hz, uint32_t tol_hz)
+{
+    static const uint32_t rate_hz[] = {2000UL, 5000UL, 10000UL, 20000UL};
+
+    if (value_hz == 0U)
+    {
+        return 0U;
+    }
+
+    for (uint8_t i = 0U; i < (uint8_t)(sizeof(rate_hz) / sizeof(rate_hz[0])); i++)
+    {
+        if (analyze_near_u32(value_hz, rate_hz[i], tol_hz) != 0U)
+        {
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
+static uint8_t analyze_low_if_in_window(void)
+{
+    uint32_t low_if_abs_hz = analyze_abs_i32(g_analyze.low_if_hz);
+
+    return ((low_if_abs_hz >= ANALYZE_AM_RESCUE_LOW_IF_MIN_HZ) &&
+            (low_if_abs_hz <= ANALYZE_AM_RESCUE_LOW_IF_MAX_HZ)) ? 1U : 0U;
+}
+
+static uint8_t analyze_lock_quality_bad(void)
+{
+#if (ANALYZE_LOCK_GATE_ENABLE != 0U)
+    if (g_expected_center_hz == 0U)
+    {
+        return 0U;
+    }
+
+    return (analyze_abs_diff_i32((int32_t)g_analyze.center_hz,
+                                 (int32_t)g_expected_center_hz) >
+            ANALYZE_LOCK_CENTER_MAX_ERR_HZ) ? 1U : 0U;
+#else
+    return 0U;
+#endif
+}
+
+static uint8_t analyze_iq_peak_far_enough(const analyze_iq_features_t *features, int32_t freq_hz)
+{
+    if (features == NULL)
+    {
+        return 0U;
+    }
+
+    for (uint8_t k = 0U; k < features->peak_count; k++)
+    {
+        if (analyze_abs_diff_i32(freq_hz, features->peaks[k].freq_hz) < ANALYZE_IQ_PEAK_MIN_SEP_HZ)
+        {
+            return 0U;
+        }
+    }
+
+    return 1U;
+}
+
+static uint8_t analyze_iq_has_peak_near(int32_t target_hz, uint32_t tol_hz)
+{
+    for (uint8_t k = 0U; k < g_iq_features.peak_count; k++)
+    {
+        if (analyze_abs_diff_i32(g_iq_features.peaks[k].freq_hz, target_hz) <= tol_hz)
+        {
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
+static uint8_t analyze_iq_fm_comb_valid(uint32_t mod_hz)
+{
+    uint8_t comb_count = 0U;
+    uint8_t carrier_count = 0U;
+    int32_t base_hz = g_analyze.low_if_hz;
+
+    if ((mod_hz < ANALYZE_FM_RESCUE_MOD_MIN_HZ) ||
+        (mod_hz > ANALYZE_FM_RESCUE_MOD_MAX_HZ) ||
+        (mod_hz <= ANALYZE_FM_RESCUE_COMB_TOL_HZ))
+    {
+        return 0U;
+    }
+
+    for (uint8_t k = 0U; k < g_iq_features.peak_count; k++)
+    {
+        int32_t delta_hz = g_iq_features.peaks[k].freq_hz - base_hz;
+        uint32_t abs_delta_hz = analyze_abs_i32(delta_hz);
+
+        if (abs_delta_hz <= ANALYZE_FM_RESCUE_COMB_TOL_HZ)
+        {
+            carrier_count++;
+        }
+        else
+        {
+            uint32_t rem_hz = abs_delta_hz % mod_hz;
+            uint32_t err_hz = (rem_hz <= (mod_hz / 2U)) ? rem_hz : (mod_hz - rem_hz);
+
+            if (err_hz <= ANALYZE_FM_RESCUE_COMB_TOL_HZ)
+            {
+                comb_count++;
+            }
+        }
+    }
+
+    return ((carrier_count != 0U) &&
+            (comb_count >= ANALYZE_FM_RESCUE_COMB_MIN_COUNT)) ? 1U : 0U;
+}
+
+static uint8_t analyze_fm_like_before_psk(uint8_t freq_valid)
+{
+    if ((freq_valid == 0U) ||
+        (g_phase_peak.freq_hz < ANALYZE_FM_RESCUE_MOD_MIN_HZ) ||
+        (g_phase_peak.freq_hz > ANALYZE_FM_RESCUE_MOD_MAX_HZ) ||
+        (g_phase_peak.score_pm < ANALYZE_FREQ_SCORE_MIN_PM) ||
+        (g_iq_features.occ99_hz < ANALYZE_FM_RESCUE_IQ_OCC99_MIN_HZ) ||
+        (g_analyze.env_iq_ratio_pm > ANALYZE_FM_RESCUE_ENV_IQ_RATIO_MAX_PM))
+    {
+        return 0U;
+    }
+
+    return analyze_iq_fm_comb_valid(g_phase_peak.freq_hz);
+}
+
+static uint8_t analyze_fm_rescue_valid(uint8_t freq_valid,
+                                       uint8_t ask_board,
+                                       uint8_t fsk_strong,
+                                       uint8_t fsk_board)
+{
+    if ((freq_valid == 0U) ||
+        (ask_board != 0U) ||
+        (fsk_strong != 0U) ||
+        (fsk_board != 0U) ||
+        (analyze_fm_like_before_psk(freq_valid) == 0U))
+    {
+        return 0U;
+    }
+
+    if (((uint32_t)g_phase_peak.score_pm * 1000UL) <
+        ((uint32_t)g_env_peak.score_pm * ANALYZE_FM_FREQ_ENV_DOMINANCE_PM))
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static void analyze_iq_insert_peak(analyze_iq_features_t *features, uint32_t bin, int32_t freq_hz, float mag)
+{
+    uint8_t insert_pos = ANALYZE_IQ_TOP_PEAK_COUNT;
+
+    if ((features == NULL) || (mag <= 0.0f) || (analyze_iq_peak_far_enough(features, freq_hz) == 0U))
+    {
+        return;
+    }
+
+    for (uint8_t k = 0U; k < features->peak_count; k++)
+    {
+        if (mag > features->peaks[k].mag)
+        {
+            insert_pos = k;
+            break;
+        }
+    }
+
+    if (insert_pos == ANALYZE_IQ_TOP_PEAK_COUNT)
+    {
+        if (features->peak_count < ANALYZE_IQ_TOP_PEAK_COUNT)
+        {
+            insert_pos = features->peak_count;
+        }
+        else
+        {
+            return;
+        }
+    }
+
+    if (features->peak_count < ANALYZE_IQ_TOP_PEAK_COUNT)
+    {
+        features->peak_count++;
+    }
+
+    for (uint8_t k = (uint8_t)(features->peak_count - 1U); k > insert_pos; k--)
+    {
+        features->peaks[k] = features->peaks[k - 1U];
+    }
+
+    features->peaks[insert_pos].bin = bin;
+    features->peaks[insert_pos].freq_hz = freq_hz;
+    features->peaks[insert_pos].mag = mag;
+}
+
+static uint32_t analyze_ratio_pm(float numerator, float denominator)
+{
+    float ratio;
+
+    if ((numerator <= 0.0f) || (denominator <= 0.000001f))
+    {
+        return 0U;
+    }
+
+    ratio = (numerator * 1000.0f) / denominator;
+    if (ratio >= (float)ANALYZE_SCORE_PM_MAX)
+    {
+        return ANALYZE_SCORE_PM_MAX;
+    }
+
+    return (uint32_t)(ratio + 0.5f);
+}
+
+static uint8_t analyze_iq_occ_bin_valid(int32_t freq_hz)
+{
+    uint32_t abs_hz = analyze_abs_i32(freq_hz);
+
+    return ((abs_hz >= ANALYZE_MOD_MIN_FREQ_HZ) &&
+            (abs_hz <= ANALYZE_MOD_MAX_FREQ_HZ)) ? 1U : 0U;
+}
+
+/* 按正负频率顺序累计 IQ 谱能量，估计 99% 能量覆盖的带宽。 */
+static uint32_t analyze_iq_occ99_hz(void)
+{
+    float total_power = 0.0f;
+    float cumulative_power = 0.0f;
+    float low_cut_power;
+    float high_cut_power;
+    int32_t low_hz = 0;
+    int32_t high_hz = 0;
+    uint8_t low_found = 0U;
+    uint8_t high_found = 0U;
+
+    for (uint32_t k = 0; k < ANALYZE_FFT_N; k++)
+    {
+        int32_t freq_hz = analyze_iq_bin_to_signed_hz(k);
+
+        if (analyze_iq_occ_bin_valid(freq_hz) != 0U)
+        {
+            total_power += g_iq_spec_mag[k] * g_iq_spec_mag[k];
+        }
+    }
+
+    if (total_power <= 0.000001f)
+    {
+        return 0U;
+    }
+
+    low_cut_power = total_power * (float)(1000U - ANALYZE_IQ_OCC99_PM) / 2000.0f;
+    high_cut_power = total_power - low_cut_power;
+
+    for (uint32_t k = ANALYZE_FFT_HALF_N + 1U; k < ANALYZE_FFT_N; k++)
+    {
+        int32_t freq_hz = analyze_iq_bin_to_signed_hz(k);
+
+        if (analyze_iq_occ_bin_valid(freq_hz) == 0U)
+        {
+            continue;
+        }
+
+        cumulative_power += g_iq_spec_mag[k] * g_iq_spec_mag[k];
+        if ((low_found == 0U) && (cumulative_power >= low_cut_power))
+        {
+            low_hz = freq_hz;
+            low_found = 1U;
+        }
+        if (cumulative_power <= high_cut_power)
+        {
+            high_hz = freq_hz;
+            high_found = 1U;
+        }
+    }
+
+    for (uint32_t k = 1U; k <= ANALYZE_FFT_HALF_N; k++)
+    {
+        int32_t freq_hz = analyze_iq_bin_to_signed_hz(k);
+
+        if (analyze_iq_occ_bin_valid(freq_hz) == 0U)
+        {
+            continue;
+        }
+
+        cumulative_power += g_iq_spec_mag[k] * g_iq_spec_mag[k];
+        if ((low_found == 0U) && (cumulative_power >= low_cut_power))
+        {
+            low_hz = freq_hz;
+            low_found = 1U;
+        }
+        if (cumulative_power <= high_cut_power)
+        {
+            high_hz = freq_hz;
+            high_found = 1U;
+        }
+    }
+
+    if ((low_found == 0U) || (high_found == 0U))
+    {
+        return 0U;
+    }
+
+    return analyze_abs_diff_i32(low_hz, high_hz);
+}
+
+static void analyze_calc_mag_phase(float re, float im, float *mag_out, float *phase_out)
+{
+    float mag = 0.0f;
+    float phase = 0.0f;
+
+    (void)arm_sqrt_f32((re * re) + (im * im), &mag);
+    phase = atan2f(im, re);
+
+    if (mag_out != NULL)
+    {
+        *mag_out = mag;
+    }
+
+    if (phase_out != NULL)
+    {
+        *phase_out = phase;
+    }
+}
+
+static uint32_t analyze_fill_env_buffer(const uint16_t *i_buf,const uint16_t *q_buf,uint32_t sample_cnt)
+{
+    float i_mean = 0.0f;
+    float q_mean = 0.0f;
+    float env_mean = 0.0f;
+    float phase_mean = 0.0f;
+    float env_min = 0.0f;
+    float env_max = 0.0f;
+    float phase_offset = 0.0f;
+    float prev_phase = 0.0f;
+    float freq_mean = 0.0f;
+    float env_p95 = 0.0f;
+    float env_p90 = 0.0f;
+    float env_p10 = 0.0f;
+    float env_p5 = 0.0f;
+    float freq_min = 0.0f;
+    float freq_max = 0.0f;
+    float freq_p95 = 0.0f;
+    float freq_p5 = 0.0f;
+
+    if ((i_buf == NULL) || (q_buf == NULL) || (sample_cnt < ANALYZE_FFT_N))
+    {
+        return 0U;
+    }
+
+    g_block_am_depth_pm = 0U;
+    g_block_ask_depth_pm = 0U;
+    g_block_fm_deviation_hz = 0U;
+    i_mean = cumsum_mean(i_buf,ANALYZE_FFT_N,1);
+    q_mean = cumsum_mean(q_buf,ANALYZE_FFT_N,1);
+
+    for (uint32_t k = 0; k < ANALYZE_FFT_N; k++)
+    {
+        float i = (float)i_buf[k] - i_mean;
+        float q = (float)q_buf[k] - q_mean;
+        float env = sqrtf((i * i) + (q * q));
+        float phase = atan2f(q, i);
+
+        g_i_buf[k] = i;
+        g_q_buf[k] = q;
+        g_env_buf[k] = env;
+
+        if (k == 0U)
+        {
+            g_phase_unwrap_buf[k] = phase;
+            prev_phase = phase;
+        }
+        else
+        {
+            float delta = phase - prev_phase;
+
+            if (delta > (ANALYZE_PI_F * 0.8f))
+            {
+                phase_offset -= ANALYZE_TWO_PI_F;
+            }
+            else if (delta < (-ANALYZE_PI_F * 0.8f))
+            {
+                phase_offset += ANALYZE_TWO_PI_F;
+            }
+
+            g_phase_unwrap_buf[k] = phase + phase_offset;
+            prev_phase = phase;
+        }
+
+        env_mean += env;
+        phase_mean += g_phase_unwrap_buf[k];
+
+        if (k == 0U)
+        {
+            env_min = env;
+            env_max = env;
+        }
+        else
+        {
+            if (env < env_min) env_min = env;
+            if (env > env_max) env_max = env;
+        }
+    }
+
+    env_mean /= (float)ANALYZE_FFT_N;
+    phase_mean /= (float)ANALYZE_FFT_N;
+    env_p95 = analyze_percentile_from_float_buf(g_env_buf, ANALYZE_FFT_N, env_min, env_max, 950U);
+    env_p90 = analyze_percentile_from_float_buf(g_env_buf, ANALYZE_FFT_N, env_min, env_max, 900U);
+    env_p10 = analyze_percentile_from_float_buf(g_env_buf, ANALYZE_FFT_N, env_min, env_max, 100U);
+    env_p5 = analyze_percentile_from_float_buf(g_env_buf, ANALYZE_FFT_N, env_min, env_max, 50U);
+    g_block_am_depth_pm = analyze_depth_from_hi_lo(env_p95, env_p5);
+    g_block_ask_depth_pm = analyze_depth_from_hi_lo(env_p90, env_p10);
+
+    for (uint32_t k = 0; k < ANALYZE_FFT_N; k++)
+    {
+        g_env_buf[k] -= env_mean;
+        g_phase_unwrap_buf[k] -= phase_mean;
+    }
+
+    /* 频率类调制优先看瞬时频率变化，因此对展开相位做一阶差分并去均值。 */
+    for (uint32_t k = 1U; k < ANALYZE_FFT_N; k++)
+    {
+        float freq_dev = g_phase_unwrap_buf[k] - g_phase_unwrap_buf[k - 1U];
+
+        g_freq_dev_buf[k - 1U] = freq_dev;
+        freq_mean += freq_dev;
+    }
+
+    g_freq_dev_buf[ANALYZE_FFT_N - 1U] = g_freq_dev_buf[ANALYZE_FFT_N - 2U];
+    freq_mean += g_freq_dev_buf[ANALYZE_FFT_N - 1U];
+    freq_mean /= (float)ANALYZE_FFT_N;
+
+#if (ANALYZE_LOW_IF_EST_ENABLE != 0U)
+    {
+        int32_t low_if_hz = analyze_rad_step_to_hz(freq_mean);
+
+        /* freq_mean 是本块平均相位步进，对应混频后残留低中频偏置。 */
+        g_analyze.low_if_hz = low_if_hz;
+        g_analyze.low_if_sum_hz += low_if_hz;
+    }
+#endif
+
+    for (uint32_t k = 0; k < ANALYZE_FFT_N; k++)
+    {
+        /* 频率类特征只保留围绕低中频的变化量，不让 5kHz 一类固定偏置参与调制判决。 */
+        float freq_dev_hz = ((g_freq_dev_buf[k] - freq_mean) * (float)ANALYZE_SAMPLE_RATE_HZ) / ANALYZE_TWO_PI_F;
+
+        g_freq_dev_buf[k] = freq_dev_hz;
+        if (k == 0U)
+        {
+            freq_min = freq_dev_hz;
+            freq_max = freq_dev_hz;
+        }
+        else
+        {
+            if (freq_dev_hz < freq_min) freq_min = freq_dev_hz;
+            if (freq_dev_hz > freq_max) freq_max = freq_dev_hz;
+        }
+    }
+
+    freq_p95 = analyze_percentile_from_float_buf(g_freq_dev_buf, ANALYZE_FFT_N, freq_min, freq_max, 950U);
+    freq_p5 = analyze_percentile_from_float_buf(g_freq_dev_buf, ANALYZE_FFT_N, freq_min, freq_max, 50U);
+    if (freq_p95 > freq_p5)
+    {
+        g_block_fm_deviation_hz = (uint32_t)(((freq_p95 - freq_p5) * 0.5f) + 0.5f);
+    }
+
+    if ((env_max + env_min) <= 1.0f)
+    {
+        return 0U;
+    }
+
+    return (uint32_t)(((env_max - env_min) * 1000.0f) / (env_max + env_min));
+}
+
+#if (ANALYZE_IQ_SPECTRUM_ENABLE != 0U)
+static analyze_spectrum_peak_t analyze_process_iq_spectrum(void)
+{
+    analyze_spectrum_peak_t peak = {0U, 0U, 0.0f, 0.0f, 0.0f, 0U};
+    float mag_sum = 0.0f;
+    uint32_t mag_count = 0U;
+    int32_t occ_min_hz = 0;
+    int32_t occ_max_hz = 0;
+    uint8_t occ_started = 0U;
+
+    memset(&g_iq_features, 0, sizeof(g_iq_features));
+
+    for (uint32_t k = 0; k < ANALYZE_FFT_N; k++)
+    {
+        g_iq_cfft_buf[2U * k] = g_i_buf[k];
+        g_iq_cfft_buf[(2U * k) + 1U] = g_q_buf[k];
+    }
+
+    arm_cfft_f32(&arm_cfft_sR_f32_len4096, g_iq_cfft_buf, 0, 1);
+
+    for (uint32_t k = 0; k < ANALYZE_FFT_N; k++)
+    {
+        float mag = 0.0f;
+        float phase = 0.0f;
+        float re = g_iq_cfft_buf[2U * k];
+        float im = g_iq_cfft_buf[(2U * k) + 1U];
+        int32_t signed_hz = analyze_iq_bin_to_signed_hz(k);
+
+        analyze_calc_mag_phase(re, im, &mag, &phase);
+        g_iq_spec_mag[k] = mag;
+        g_iq_spec_phase[k] = phase;
+        analyze_update_peak(&peak, k, mag, phase);
+        if (analyze_abs_i32(signed_hz) >= ANALYZE_MOD_MIN_FREQ_HZ)
+        {
+            mag_sum += mag;
+            mag_count++;
+            analyze_iq_insert_peak(&g_iq_features, k, signed_hz, mag);
+        }
+
+    }
+
+    if (mag_count != 0U)
+    {
+        peak.mean_mag = mag_sum / (float)mag_count;
+        peak.score_pm = analyze_peak_score_pm(peak.mag, peak.mean_mag);
+        g_iq_features.score_pm = peak.score_pm;
+    }
+
+    if (g_iq_features.peak_count != 0U)
+    {
+        float occ_threshold = (g_iq_features.peaks[0].mag * (float)ANALYZE_IQ_OCC_REL_PM) / 1000.0f;
+        float strong_threshold = (g_iq_features.peaks[0].mag * (float)ANALYZE_IQ_STRONG_PEAK_REL_PM) / 1000.0f;
+
+        for (uint8_t k = 0U; k < g_iq_features.peak_count; k++)
+        {
+            if (g_iq_features.peaks[k].mag >= strong_threshold)
+            {
+                g_iq_features.strong_peak_count++;
+            }
+        }
+
+        for (uint32_t k = 0; k < ANALYZE_FFT_N; k++)
+        {
+            if (g_iq_spec_mag[k] >= occ_threshold)
+            {
+                int32_t signed_hz = analyze_iq_bin_to_signed_hz(k);
+
+                if (occ_started == 0U)
+                {
+                    occ_min_hz = signed_hz;
+                    occ_max_hz = signed_hz;
+                    occ_started = 1U;
+                }
+                else
+                {
+                    if (signed_hz < occ_min_hz) occ_min_hz = signed_hz;
+                    if (signed_hz > occ_max_hz) occ_max_hz = signed_hz;
+                }
+            }
+        }
+
+        if (occ_started != 0U)
+        {
+            g_iq_features.occ_hz = analyze_abs_diff_i32(occ_max_hz, occ_min_hz);
+        }
+        g_iq_features.occ99_hz = analyze_iq_occ99_hz();
+
+        if (g_iq_features.peak_count >= 2U)
+        {
+            g_iq_features.fsk_sep_hz = analyze_abs_diff_i32(g_iq_features.peaks[0].freq_hz,
+                                                            g_iq_features.peaks[1].freq_hz);
+            g_iq_features.fsk_balance_pm = analyze_ratio_pm(g_iq_features.peaks[1].mag,
+                                                            g_iq_features.peaks[0].mag);
+        }
+
+        if (g_iq_features.peak_count >= 3U)
+        {
+            g_iq_features.third_to_second_pm = analyze_ratio_pm(g_iq_features.peaks[2].mag,
+                                                                g_iq_features.peaks[1].mag);
+        }
+    }
+
+    return peak;
+}
+#endif
+
+static analyze_spectrum_peak_t analyze_process_rfft_spectrum(const char *tag,
+                                                             arm_rfft_fast_instance_f32 *fft_inst,
+                                                             float *input_buf,
+                                                             float *fft_buf,
+                                                             float *mag_buf,
+                                                             float *phase_buf)
+{
+    analyze_spectrum_peak_t peak = {0U, 0U, 0.0f, 0.0f, 0.0f, 0U};
+    float mag_sum = 0.0f;
+    uint32_t mag_count = 0U;
+
+    if ((tag == NULL) || (fft_inst == NULL) || (input_buf == NULL) ||
+        (fft_buf == NULL) || (mag_buf == NULL) || (phase_buf == NULL))
+    {
+        return peak;
+    }
+
+    arm_rfft_fast_f32(fft_inst, input_buf, fft_buf, 0);
+
+    for (uint32_t k = 0; k < ANALYZE_FFT_HALF_N; k++)
+    {
+        float re;
+        float im;
+        float mag = 0.0f;
+        float phase = 0.0f;
+
+        if (k == 0U)
+        {
+            re = fft_buf[0U];
+            im = 0.0f;
+        }
+        else
+        {
+            re = fft_buf[2U * k];
+            im = fft_buf[(2U * k) + 1U];
+        }
+
+        analyze_calc_mag_phase(re, im, &mag, &phase);
+        mag_buf[k] = mag;
+        phase_buf[k] = phase;
+
+        if (analyze_mod_bin_is_valid(k) != 0U)
+        {
+            mag_sum += mag;
+            mag_count++;
+            analyze_update_mod_peak(&peak, k, mag, phase);
+        }
+
+    }
+
+    if (mag_count != 0U)
+    {
+        peak.mean_mag = mag_sum / (float)mag_count;
+        peak.score_pm = analyze_peak_score_pm(peak.mag, peak.mean_mag);
+    }
+
+    return peak;
+}
+
+static uint8_t analyze_count_rfft_strong_peaks(const float *mag_buf, const analyze_spectrum_peak_t *peak)
+{
+    uint8_t count = 0U;
+    float threshold;
+
+    if ((mag_buf == NULL) || (peak == NULL) || (peak->mag <= 0.0f))
+    {
+        return 0U;
+    }
+
+    threshold = (peak->mag * (float)ANALYZE_ENV_STRONG_PEAK_REL_PM) / 1000.0f;
+    for (uint32_t k = 1U; k < (ANALYZE_FFT_HALF_N - 1U); k++)
+    {
+        if ((analyze_mod_bin_is_valid(k) != 0U) &&
+            (mag_buf[k] >= threshold) &&
+            (mag_buf[k] >= mag_buf[k - 1U]) &&
+            (mag_buf[k] >= mag_buf[k + 1U]))
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+static uint32_t analyze_rfft_tone_fraction_pm(const float *mag_buf, const analyze_spectrum_peak_t *peak)
+{
+    float total_power = 0.0f;
+    float tone_power = 0.0f;
+    uint32_t start_bin;
+    uint32_t stop_bin;
+
+    if ((mag_buf == NULL) || (peak == NULL) || (peak->bin == 0U))
+    {
+        return 0U;
+    }
+
+    start_bin = (peak->bin > ANALYZE_ENV_TONE_BINS) ? (peak->bin - ANALYZE_ENV_TONE_BINS) : 1U;
+    stop_bin = peak->bin + ANALYZE_ENV_TONE_BINS;
+    if (stop_bin >= ANALYZE_FFT_HALF_N)
+    {
+        stop_bin = ANALYZE_FFT_HALF_N - 1U;
+    }
+
+    for (uint32_t k = 1U; k < ANALYZE_FFT_HALF_N; k++)
+    {
+        float power = mag_buf[k] * mag_buf[k];
+
+        if (analyze_mod_bin_is_valid(k) == 0U)
+        {
+            continue;
+        }
+
+        total_power += power;
+        if ((k >= start_bin) && (k <= stop_bin))
+        {
+            tone_power += power;
+        }
+    }
+
+    return analyze_ratio_pm(tone_power, total_power);
+}
+
+/* 统计包络谱主峰之外的第二/第三局部峰，用于区分单音 AM 与多峰 ASK。 */
+static void analyze_update_env_side_peak_ratios(void)
+{
+    float second_mag = 0.0f;
+    float third_mag = 0.0f;
+    uint32_t guard_start;
+    uint32_t guard_stop;
+
+    g_env_second_ratio_pm = 0U;
+    g_env_third_ratio_pm = 0U;
+
+    if ((g_env_peak.bin == 0U) || (g_env_peak.mag <= 0.0f))
+    {
+        return;
+    }
+
+    guard_start = (g_env_peak.bin > 2U) ? (g_env_peak.bin - 2U) : 1U;
+    guard_stop = g_env_peak.bin + 2U;
+    if (guard_stop >= ANALYZE_FFT_HALF_N)
+    {
+        guard_stop = ANALYZE_FFT_HALF_N - 1U;
+    }
+
+    for (uint32_t k = 1U; k < (ANALYZE_FFT_HALF_N - 1U); k++)
+    {
+        float mag;
+
+        if ((k >= guard_start) && (k <= guard_stop))
+        {
+            continue;
+        }
+
+        if ((analyze_mod_bin_is_valid(k) == 0U) ||
+            (g_env_spec_mag[k] < g_env_spec_mag[k - 1U]) ||
+            (g_env_spec_mag[k] < g_env_spec_mag[k + 1U]))
+        {
+            continue;
+        }
+
+        mag = g_env_spec_mag[k];
+        if (mag > second_mag)
+        {
+            third_mag = second_mag;
+            second_mag = mag;
+        }
+        else if (mag > third_mag)
+        {
+            third_mag = mag;
+        }
+    }
+
+    g_env_second_ratio_pm = analyze_ratio_pm(second_mag, g_env_peak.mag);
+    g_env_third_ratio_pm = analyze_ratio_pm(third_mag, g_env_peak.mag);
+}
+
+static uint8_t analyze_peak_score_valid(const analyze_spectrum_peak_t *peak, uint32_t min_score_pm)
+{
+    if (peak == NULL)
+    {
+        return 0U;
+    }
+
+    return ((peak->bin != 0U) && (peak->score_pm >= min_score_pm)) ? 1U : 0U;
+}
+
+static uint8_t analyze_iq_fsk_strong_valid(void)
+{
+    if (g_iq_features.peak_count < 2U)
+    {
+        return 0U;
+    }
+
+    if ((g_iq_features.occ99_hz != 0U) &&
+        (g_iq_features.occ99_hz > ANALYZE_FSK_IQ_OCC99_MAX_HZ))
+    {
+        return 0U;
+    }
+
+    if (g_analyze.env_iq_ratio_pm > ANALYZE_FSK_ENV_IQ_RATIO_MAX_PM)
+    {
+        return 0U;
+    }
+
+    if ((g_iq_features.fsk_sep_hz < ANALYZE_FSK_MIN_SEP_HZ) ||
+        (g_iq_features.fsk_sep_hz > ANALYZE_FSK_MAX_SEP_HZ))
+    {
+        return 0U;
+    }
+
+    if (g_iq_features.fsk_balance_pm < ANALYZE_FSK_PEAK_BALANCE_MIN_PM)
+    {
+        return 0U;
+    }
+
+    if ((g_analyze.depth_pm > ANALYZE_FSK_LOW_DEPTH_THIRD_IGNORE_PM) &&
+        (g_iq_features.peak_count >= 3U) &&
+        (g_iq_features.third_to_second_pm > ANALYZE_FSK_THIRD_PEAK_MAX_PM))
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static uint8_t analyze_iq_fsk_pattern_valid(void)
+{
+    uint8_t has_neg5 = analyze_iq_has_peak_near(-5000, 1500U);
+    uint8_t has_neg15 = analyze_iq_has_peak_near(-15000, 2500U);
+    uint8_t has_pos5 = analyze_iq_has_peak_near(5000, 1500U);
+
+    return (((has_neg5 != 0U) && (has_neg15 != 0U)) ||
+            ((has_neg5 != 0U) && (has_pos5 != 0U))) ? 1U : 0U;
+}
+
+static uint8_t analyze_ask_on_board_valid(uint8_t amp_valid)
+{
+    if ((amp_valid == 0U) ||
+        (g_analyze.depth_pm < ANALYZE_ASK_DEPTH_MIN_PM) ||
+        (g_analyze.env_iq_ratio_pm < ANALYZE_ASK_ENV_IQ_RATIO_MIN_PM) ||
+        (g_iq_features.occ99_hz < ANALYZE_ASK_IQ_OCC99_MIN_HZ))
+    {
+        return 0U;
+    }
+
+    return analyze_near_any_digital_rate(g_env_peak.freq_hz,
+                                         ANALYZE_DIGITAL_RATE_TOL_HZ);
+}
+
+static uint8_t analyze_fsk_on_board_valid(uint8_t freq_valid)
+{
+    if ((freq_valid == 0U) ||
+        (g_iq_features.occ99_hz == 0U) ||
+        (g_iq_features.occ99_hz > ANALYZE_FSK_IQ_OCC99_MAX_HZ) ||
+        (g_analyze.env_iq_ratio_pm > ANALYZE_FSK_ENV_IQ_RATIO_MAX_PM) ||
+        (analyze_iq_fsk_pattern_valid() == 0U))
+    {
+        return 0U;
+    }
+
+    return analyze_near_any_digital_rate(g_phase_peak.freq_hz,
+                                         ANALYZE_DIGITAL_RATE_TOL_HZ);
+}
+
+static uint8_t analyze_psk_on_board_valid(void)
+{
+    if ((g_iq_features.occ99_hz < ANALYZE_PSK_IQ_OCC99_MIN_HZ) ||
+        (g_analyze.env_iq_ratio_pm >= ANALYZE_ASK_ENV_IQ_RATIO_MIN_PM) ||
+        (g_analyze.depth_pm > ANALYZE_PSK_DEPTH_MAX_PM))
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static uint8_t analyze_am_simple_tone_valid(uint8_t amp_valid)
+{
+    if ((amp_valid == 0U) ||
+        (g_iq_features.occ99_hz > ANALYZE_AM_IQ99_MAX_HZ) ||
+        (g_env_second_ratio_pm > ANALYZE_AM_ENV_SECOND_MAX_PM) ||
+        (g_analyze.depth_pm > ANALYZE_AM_DEPTH_MAX_PM) ||
+        (g_env_tone_fraction_pm < ANALYZE_AM_ENV_TONE_MIN_PM) ||
+        (g_env_peak.freq_hz < ANALYZE_AM_ENV_MIN_FREQ_HZ) ||
+        (g_env_peak_count > ANALYZE_AM_ENV_PEAK_COUNT_MAX))
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static uint8_t analyze_am_rescue_valid(uint8_t amp_valid)
+{
+    if ((amp_valid == 0U) ||
+        (analyze_low_if_in_window() == 0U) ||
+        (analyze_am_simple_tone_valid(amp_valid) == 0U) ||
+        (g_env_tone_fraction_pm < ANALYZE_AM_RESCUE_ENV_TONE_MIN_PM) ||
+        (g_env_peak_count > ANALYZE_AM_RESCUE_ENV_PEAK_COUNT_MAX))
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static uint8_t analyze_fsk_rescue_valid(uint8_t freq_valid)
+{
+    if ((freq_valid == 0U) ||
+        (g_iq_features.peak_count < 2U) ||
+        (g_iq_features.fsk_sep_hz < ANALYZE_FSK_RESCUE_SEP_MIN_HZ) ||
+        (g_iq_features.fsk_sep_hz > ANALYZE_FSK_RESCUE_SEP_MAX_HZ) ||
+        (g_analyze.env_iq_ratio_pm > ANALYZE_FSK_RESCUE_ENV_IQ_MAX_PM) ||
+        (g_analyze.depth_pm > ANALYZE_FSK_RESCUE_DEPTH_MAX_PM) ||
+        (g_iq_features.fsk_balance_pm < ANALYZE_FSK_RESCUE_BALANCE_MIN_PM))
+    {
+        return 0U;
+    }
+
+    if ((g_iq_features.peak_count >= 3U) &&
+        (g_iq_features.third_to_second_pm > ANALYZE_FSK_RESCUE_THIRD_MAX_PM))
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static uint8_t analyze_ask_rescue_valid(uint8_t amp_valid)
+{
+    if ((amp_valid == 0U) ||
+        (g_analyze.depth_pm < ANALYZE_ASK_RESCUE_DEPTH_MIN_PM) ||
+        (g_analyze.env_iq_ratio_pm < ANALYZE_ASK_RESCUE_ENV_IQ_WEAK_PM) ||
+        (g_iq_features.occ99_hz < ANALYZE_ASK_RESCUE_IQ99_MIN_HZ) ||
+        (g_env_peak.freq_hz > ANALYZE_ASK_RESCUE_ENV_FREQ_MAX_HZ))
+    {
+        return 0U;
+    }
+
+    if ((g_env_second_ratio_pm < ANALYZE_ASK_RESCUE_ENV_SECOND_MIN_PM) &&
+        (g_env_peak_count < 2U))
+    {
+        return 0U;
+    }
+
+    if ((g_analyze.env_iq_ratio_pm >= ANALYZE_ASK_RESCUE_ENV_IQ_STRONG_PM) ||
+        (analyze_near_any_digital_rate(g_env_peak.freq_hz, ANALYZE_DIGITAL_RATE_TOL_HZ) != 0U))
+    {
+        return 1U;
+    }
+
+    return 0U;
+}
+
+static uint8_t analyze_bpsk_low_rate_rescue_valid(void)
+{
+    if ((g_analyze.depth_pm < ANALYZE_BPSK_RESCUE_DEPTH_MIN_PM) ||
+        (g_analyze.env_iq_ratio_pm > ANALYZE_BPSK_RESCUE_ENV_IQ_MAX_PM) ||
+        (g_iq_features.occ99_hz == 0U) ||
+        (g_iq_features.occ99_hz > ANALYZE_BPSK_RESCUE_IQ99_MAX_HZ))
+    {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static analyze_block_decision_t analyze_make_no_lock_decision(void)
+{
+    analyze_block_decision_t decision = {ANALYZE_MODE_UNKNOWN, 0U, 0U, ANALYZE_REASON_LOCK_BAD};
+
+    return decision;
+}
+
+static analyze_block_decision_t analyze_classify_baseline_block(uint8_t amp_valid, uint8_t freq_valid)
+{
+    analyze_block_decision_t decision = {ANALYZE_MODE_UNKNOWN, 0U, 0U, ANALYZE_REASON_NONE};
+    uint8_t ask_board = analyze_ask_on_board_valid(amp_valid);
+    uint8_t fsk_strong = analyze_iq_fsk_strong_valid();
+    uint8_t fsk_board = analyze_fsk_on_board_valid(freq_valid);
+    uint8_t fm_like = analyze_fm_like_before_psk(freq_valid);
+    uint8_t psk_board = (fm_like == 0U) ? analyze_psk_on_board_valid() : 0U;
+    uint8_t fm_rescue = analyze_fm_rescue_valid(freq_valid, ask_board, fsk_strong, fsk_board);
+    uint8_t iq_wide = ((g_iq_features.occ_hz >= ANALYZE_DIGITAL_OCC_MIN_HZ) ||
+                       (g_iq_features.occ99_hz >= ANALYZE_DIGITAL_OCC_MIN_HZ) ||
+                       (g_iq_features.strong_peak_count >= ANALYZE_DIGITAL_PEAK_COUNT_MIN)) ? 1U : 0U;
+    uint8_t iq_narrow = ((g_iq_features.occ_hz <= ANALYZE_CW_OCC_MAX_HZ) &&
+                         (g_iq_features.strong_peak_count <= 2U)) ? 1U : 0U;
+    uint8_t env_tone_like = ((g_env_tone_fraction_pm >= ANALYZE_AM_ENV_TONE_MIN_PM) &&
+                             (g_env_peak.freq_hz >= ANALYZE_AM_ENV_MIN_FREQ_HZ) &&
+                             (g_env_peak_count <= ANALYZE_AM_ENV_PEAK_COUNT_MAX)) ? 1U : 0U;
+
+    if ((g_analyze.depth_pm <= ANALYZE_CW_DEPTH_MAX_PM) &&
+        (iq_narrow != 0U) &&
+        (fsk_strong == 0U) &&
+        (fsk_board == 0U))
+    {
+        decision.mode = ANALYZE_MODE_CW;
+        decision.mod_hz = 0U;
+        decision.confidence_pm = (g_iq_features.score_pm != 0U) ? g_iq_features.score_pm : 1000U;
+        decision.reason = ANALYZE_REASON_CW;
+        return decision;
+    }
+
+    /*
+     * 板上数字调制优先级仍保持：强 ASK -> FSK -> PSK。
+     * 只在 PSK 前增加严格 FM rescue：必须同时满足频率谱强、包络弱、IQ 宽谱
+     * 且 IQ 强峰呈 low_if ± n*fmod 梳状多边带，尽量不影响既有 ASK/FSK/PSK。
+     */
+    if (ask_board != 0U)
+    {
+        decision.mode = ANALYZE_MODE_ASK;
+        decision.mod_hz = g_env_peak.freq_hz;
+        decision.confidence_pm = g_analyze.env_iq_ratio_pm;
+        decision.reason = ANALYZE_REASON_ASK_ENV;
+        return decision;
+    }
+
+    if ((fsk_strong != 0U) || (fsk_board != 0U))
+    {
+        decision.mode = ANALYZE_MODE_FSK;
+        decision.mod_hz = (g_iq_features.fsk_sep_hz != 0U) ? g_iq_features.fsk_sep_hz : g_phase_peak.freq_hz;
+        decision.confidence_pm = (g_iq_features.fsk_balance_pm > g_iq_features.score_pm) ?
+                                 g_iq_features.fsk_balance_pm : g_iq_features.score_pm;
+        decision.reason = ANALYZE_REASON_FSK_STRONG;
+        return decision;
+    }
+
+    if ((fm_rescue != 0U) || (fm_like != 0U))
+    {
+        decision.mode = ANALYZE_MODE_FM;
+        decision.mod_hz = g_phase_peak.freq_hz;
+        decision.confidence_pm = g_phase_peak.score_pm;
+        decision.reason = ANALYZE_REASON_FM_PHASE;
+        return decision;
+    }
+
+    if (psk_board != 0U)
+    {
+        decision.mode = ANALYZE_MODE_PSK;
+        decision.mod_hz = 0U;
+        decision.confidence_pm = (g_iq_features.score_pm > g_iq_features.occ99_hz) ?
+                                 g_iq_features.score_pm : g_iq_features.occ99_hz;
+        decision.reason = ANALYZE_REASON_PSK_WIDE;
+        return decision;
+    }
+
+    if ((freq_valid != 0U) &&
+        (fsk_strong == 0U) &&
+        (fsk_board == 0U) &&
+        (((uint32_t)g_phase_peak.score_pm * 1000UL) >=
+         ((uint32_t)g_env_peak.score_pm * ANALYZE_FM_FREQ_ENV_DOMINANCE_PM)))
+    {
+        decision.mode = ANALYZE_MODE_FM;
+        decision.mod_hz = g_phase_peak.freq_hz;
+        decision.confidence_pm = g_phase_peak.score_pm;
+        decision.reason = ANALYZE_REASON_FM_PHASE;
+        return decision;
+    }
+
+    if (analyze_am_simple_tone_valid(amp_valid) != 0U)
+    {
+        decision.mode = ANALYZE_MODE_AM;
+        decision.mod_hz = g_env_peak.freq_hz;
+        decision.confidence_pm = g_env_peak.score_pm;
+        decision.reason = ANALYZE_REASON_AM_TONE;
+        return decision;
+    }
+
+    if ((fm_like == 0U) && (iq_wide != 0U) && (amp_valid == 0U) && (freq_valid == 0U))
+    {
+        decision.mode = ANALYZE_MODE_PSK;
+        decision.mod_hz = 0U;
+        decision.confidence_pm = g_iq_features.score_pm;
+        decision.reason = ANALYZE_REASON_PSK_WIDE;
+        return decision;
+    }
+
+    if ((iq_wide != 0U) && (amp_valid == 0U) && (freq_valid != 0U))
+    {
+        decision.mode = ANALYZE_MODE_FSK;
+        decision.mod_hz = (g_iq_features.fsk_sep_hz != 0U) ? g_iq_features.fsk_sep_hz : g_phase_peak.freq_hz;
+        decision.confidence_pm = g_phase_peak.score_pm;
+        decision.reason = ANALYZE_REASON_FSK_WEAK;
+        return decision;
+    }
+
+    if ((fm_like == 0U) &&
+        (iq_wide != 0U) &&
+        (env_tone_like == 0U) &&
+        (g_analyze.depth_pm <= ANALYZE_PSK_DEPTH_MAX_PM))
+    {
+        decision.mode = ANALYZE_MODE_PSK;
+        decision.mod_hz = 0U;
+        decision.confidence_pm = (g_iq_features.score_pm > g_env_peak.score_pm) ?
+                                 g_iq_features.score_pm : g_env_peak.score_pm;
+        decision.reason = ANALYZE_REASON_PSK_WIDE;
+        return decision;
+    }
+
+    if ((amp_valid != 0U) &&
+        (env_tone_like == 0U) &&
+        (g_analyze.depth_pm >= ANALYZE_ASK_DEPTH_MIN_PM) &&
+        (g_env_peak.freq_hz >= ANALYZE_AM_ENV_MIN_FREQ_HZ) &&
+        (g_analyze.env_iq_ratio_pm >= ANALYZE_ASK_ENV_IQ_RATIO_MIN_PM))
+    {
+        decision.mode = ANALYZE_MODE_ASK;
+        decision.mod_hz = g_env_peak.freq_hz;
+        decision.confidence_pm = g_env_peak.score_pm;
+        decision.reason = ANALYZE_REASON_ASK_ENV;
+        return decision;
+    }
+
+    if ((g_analyze.depth_pm <= ANALYZE_CW_DEPTH_MAX_PM) &&
+        (amp_valid == 0U) &&
+        (freq_valid == 0U))
+    {
+        decision.mode = ANALYZE_MODE_CW;
+        decision.mod_hz = 0U;
+        decision.confidence_pm = (g_iq_features.score_pm != 0U) ? g_iq_features.score_pm : 1000U;
+        decision.reason = ANALYZE_REASON_CW;
+        return decision;
+    }
+
+    if ((amp_valid != 0U) || (freq_valid != 0U))
+    {
+        decision.mode = ANALYZE_MODE_MIXED;
+        decision.mod_hz = (amp_valid != 0U) ? g_env_peak.freq_hz : g_phase_peak.freq_hz;
+        decision.confidence_pm = (g_env_peak.score_pm > g_phase_peak.score_pm) ?
+                                 g_env_peak.score_pm : g_phase_peak.score_pm;
+        decision.reason = ANALYZE_REASON_MIXED;
+    }
+
+    return decision;
+}
+
+static analyze_block_decision_t analyze_apply_conservative_rescue(analyze_block_decision_t base,
+                                                                  uint8_t amp_valid,
+                                                                  uint8_t freq_valid)
+{
+    analyze_block_decision_t out = base;
+
+    if (analyze_lock_quality_bad() != 0U)
+    {
+        return analyze_make_no_lock_decision();
+    }
+
+#if (ANALYZE_RESCUE_ENABLE != 0U)
+    if ((out.mode != ANALYZE_MODE_ASK) &&
+        (out.mode != ANALYZE_MODE_FM) &&
+        (out.mode != ANALYZE_MODE_FSK) &&
+        (analyze_ask_rescue_valid(amp_valid) != 0U))
+    {
+        out.mode = ANALYZE_MODE_ASK;
+        out.mod_hz = g_env_peak.freq_hz;
+        out.confidence_pm = (g_analyze.env_iq_ratio_pm > g_env_peak.score_pm) ?
+                            g_analyze.env_iq_ratio_pm : g_env_peak.score_pm;
+        out.reason = ANALYZE_REASON_ASK_RESCUE;
+        return out;
+    }
+
+    if ((out.mode != ANALYZE_MODE_ASK) &&
+        (analyze_am_rescue_valid(amp_valid) != 0U))
+    {
+        out.mode = ANALYZE_MODE_AM;
+        out.mod_hz = g_env_peak.freq_hz;
+        out.confidence_pm = g_env_peak.score_pm;
+        out.reason = ANALYZE_REASON_AM_RESCUE;
+        return out;
+    }
+
+    if ((out.mode != ANALYZE_MODE_ASK) &&
+        (out.mode != ANALYZE_MODE_AM) &&
+        (analyze_fm_rescue_valid(freq_valid,
+                                 analyze_ask_on_board_valid(amp_valid),
+                                 analyze_iq_fsk_strong_valid(),
+                                 analyze_fsk_on_board_valid(freq_valid)) != 0U))
+    {
+        out.mode = ANALYZE_MODE_FM;
+        out.mod_hz = g_phase_peak.freq_hz;
+        out.confidence_pm = g_phase_peak.score_pm;
+        out.reason = ANALYZE_REASON_FM_RESCUE;
+        return out;
+    }
+
+    if ((out.mode != ANALYZE_MODE_AM) &&
+        (out.mode != ANALYZE_MODE_ASK) &&
+        (analyze_fsk_rescue_valid(freq_valid) != 0U))
+    {
+        out.mode = ANALYZE_MODE_FSK;
+        out.mod_hz = g_iq_features.fsk_sep_hz;
+        out.confidence_pm = (g_iq_features.fsk_balance_pm > g_iq_features.score_pm) ?
+                            g_iq_features.fsk_balance_pm : g_iq_features.score_pm;
+        out.reason = ANALYZE_REASON_FSK_RESCUE;
+        return out;
+    }
+
+    if (((out.mode == ANALYZE_MODE_UNKNOWN) ||
+         (out.mode == ANALYZE_MODE_CW) ||
+         (out.mode == ANALYZE_MODE_FSK)) &&
+        (analyze_bpsk_low_rate_rescue_valid() != 0U))
+    {
+        out.mode = ANALYZE_MODE_PSK;
+        out.mod_hz = 0U;
+        out.confidence_pm = g_iq_features.score_pm;
+        out.reason = ANALYZE_REASON_BPSK_RESCUE;
+        return out;
+    }
+#else
+    (void)amp_valid;
+    (void)freq_valid;
+#endif
+
+    return out;
+}
+
+static analyze_block_decision_t analyze_classify_current_block(uint8_t amp_valid, uint8_t freq_valid)
+{
+    analyze_block_decision_t base = analyze_classify_baseline_block(amp_valid, freq_valid);
+
+    return analyze_apply_conservative_rescue(base, amp_valid, freq_valid);
+}
+
+static void analyze_accumulate_param_confidence(uint32_t confidence_pm)
+{
+    g_analyze.param_confidence_sum_pm += analyze_limit_param_confidence(confidence_pm);
+    g_analyze.param_confidence_count++;
+}
+
+/* 分类完成后估计本块参数，字段之间不再复用 mod_hz。 */
+static void analyze_estimate_block_params(analyze_mode_t mode,
+                                          uint8_t amp_valid,
+                                          uint8_t freq_valid,
+                                          uint32_t confidence_pm)
+{
+    switch (mode)
+    {
+    case ANALYZE_MODE_AM:
+        if (g_block_am_depth_pm != 0U)
+        {
+            g_analyze.am_depth_sum_pm += g_block_am_depth_pm;
+            g_analyze.am_depth_count++;
+            analyze_accumulate_param_confidence(confidence_pm);
+        }
+        break;
+
+    case ANALYZE_MODE_ASK:
+        if (g_block_ask_depth_pm != 0U)
+        {
+            g_analyze.ask_depth_sum_pm += g_block_ask_depth_pm;
+            g_analyze.ask_depth_count++;
+            analyze_accumulate_param_confidence(confidence_pm);
+        }
+        if ((amp_valid != 0U) && (g_env_peak.freq_hz != 0U))
+        {
+            g_analyze.symbol_rate_sum_hz += g_env_peak.freq_hz;
+            g_analyze.symbol_rate_count++;
+        }
+        break;
+
+    case ANALYZE_MODE_FM:
+        if ((freq_valid != 0U) && (g_block_fm_deviation_hz != 0U))
+        {
+            g_analyze.fm_deviation_sum_hz += g_block_fm_deviation_hz;
+            g_analyze.fm_deviation_count++;
+            analyze_accumulate_param_confidence(confidence_pm);
+        }
+        break;
+
+    case ANALYZE_MODE_FSK:
+        if (g_iq_features.fsk_sep_hz != 0U)
+        {
+            g_analyze.fsk_sep_sum_hz += g_iq_features.fsk_sep_hz;
+            g_analyze.fsk_sep_count++;
+            analyze_accumulate_param_confidence(confidence_pm);
+        }
+        if ((freq_valid != 0U) && (g_phase_peak.freq_hz != 0U))
+        {
+            g_analyze.symbol_rate_sum_hz += g_phase_peak.freq_hz;
+            g_analyze.symbol_rate_count++;
+        }
+        break;
+
+    case ANALYZE_MODE_PSK:
+        if ((freq_valid != 0U) && (g_phase_peak.freq_hz != 0U))
+        {
+            g_analyze.symbol_rate_sum_hz += g_phase_peak.freq_hz;
+            g_analyze.symbol_rate_count++;
+            analyze_accumulate_param_confidence(confidence_pm);
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+static void analyze_accumulate_block_result(void)
+{
+    uint8_t amp_valid = 0U;
+    uint8_t freq_valid = 0U;
+    analyze_block_decision_t decision;
+
+#if (ANALYZE_ENV_SPECTRUM_ENABLE != 0U)
+    amp_valid = ((g_analyze.depth_pm >= ANALYZE_AM_DEPTH_MIN_PM) &&
+                 (analyze_peak_score_valid(&g_env_peak, ANALYZE_ENV_SCORE_MIN_PM) != 0U)) ? 1U : 0U;
+    g_analyze.env_score_pm = g_env_peak.score_pm;
+    g_analyze.env_peak_hz = g_env_peak.freq_hz;
+#endif
+
+#if (ANALYZE_FREQ_SPECTRUM_ENABLE != 0U)
+    freq_valid = analyze_peak_score_valid(&g_phase_peak, ANALYZE_FREQ_SCORE_MIN_PM);
+    g_analyze.freq_score_pm = g_phase_peak.score_pm;
+    g_analyze.freq_peak_hz = g_phase_peak.freq_hz;
+#endif
+
+    /* 当前先做轻量投票：包络谱代表幅度类，频率偏移谱代表频率类。 */
+    if (amp_valid != 0U)
+    {
+        g_analyze.amp_vote_count++;
+        g_analyze.amp_mod_sum_hz += g_env_peak.freq_hz;
+    }
+
+    if (freq_valid != 0U)
+    {
+        g_analyze.freq_vote_count++;
+        g_analyze.freq_mod_sum_hz += g_phase_peak.freq_hz;
+    }
+
+    if ((amp_valid == 0U) && (freq_valid == 0U))
+    {
+        g_analyze.quiet_vote_count++;
+    }
+
+    decision = analyze_classify_current_block(amp_valid, freq_valid);
+    if ((uint32_t)decision.mode < ANALYZE_MODE_COUNT)
+    {
+        g_analyze.mode_vote_count[decision.mode]++;
+        g_analyze.mode_confidence_sum[decision.mode] += decision.confidence_pm;
+    }
+
+    if (decision.mod_hz != 0U)
+    {
+        if (decision.mode == ANALYZE_MODE_FSK)
+        {
+            g_analyze.fsk_sep_hz = decision.mod_hz;
+        }
+    }
+
+    if (decision.reason != ANALYZE_REASON_NONE)
+    {
+        g_analyze.result_reason = decision.reason;
+    }
+
+    analyze_estimate_block_params(decision.mode, amp_valid, freq_valid, decision.confidence_pm);
+}
+
+static uint32_t analyze_average_mod_hz(uint32_t sum_hz, uint8_t count)
+{
+    if (count == 0U)
+    {
+        return 0U;
+    }
+
+    return (sum_hz + ((uint32_t)count / 2U)) / (uint32_t)count;
+}
+
+static void analyze_finalize_result(void)
+{
+    analyze_mode_t best_mode = ANALYZE_MODE_UNKNOWN;
+    uint8_t best_votes = 0U;
+    uint8_t second_votes = 0U;
+    uint32_t best_confidence = 0U;
+
+#if (ANALYZE_LOW_IF_EST_ENABLE != 0U)
+    g_analyze.low_if_hz = analyze_average_i32(g_analyze.low_if_sum_hz, g_analyze.vote_count);
+#endif
+
+    for (uint8_t mode = 0U; mode < ANALYZE_MODE_COUNT; mode++)
+    {
+        uint8_t votes = g_analyze.mode_vote_count[mode];
+        uint32_t confidence = g_analyze.mode_confidence_sum[mode];
+
+        if ((votes > best_votes) || ((votes == best_votes) && (confidence > best_confidence)))
+        {
+            second_votes = best_votes;
+            best_votes = votes;
+            best_confidence = confidence;
+            best_mode = (analyze_mode_t)mode;
+        }
+        else if (votes > second_votes)
+        {
+            second_votes = votes;
+        }
+    }
+
+    if (best_votes == 0U)
+    {
+        g_analyze.mode = ANALYZE_MODE_UNKNOWN;
+        g_analyze.mod_hz = 0U;
+        return;
+    }
+
+    if ((best_votes == second_votes) && (best_votes != 0U) &&
+        (best_mode != ANALYZE_MODE_CW) && (best_mode != ANALYZE_MODE_UNKNOWN))
+    {
+        g_analyze.mode = ANALYZE_MODE_MIXED;
+        g_analyze.mod_hz = (g_analyze.amp_vote_count >= g_analyze.freq_vote_count) ?
+                           analyze_average_mod_hz(g_analyze.amp_mod_sum_hz, g_analyze.amp_vote_count) :
+                           analyze_average_mod_hz(g_analyze.freq_mod_sum_hz, g_analyze.freq_vote_count);
+        return;
+    }
+
+    g_analyze.mode = best_mode;
+    switch (best_mode)
+    {
+    case ANALYZE_MODE_AM:
+    case ANALYZE_MODE_ASK:
+        g_analyze.mod_hz = analyze_average_mod_hz(g_analyze.amp_mod_sum_hz, g_analyze.amp_vote_count);
+        break;
+    case ANALYZE_MODE_FM:
+        g_analyze.mod_hz = analyze_average_mod_hz(g_analyze.freq_mod_sum_hz, g_analyze.freq_vote_count);
+        break;
+    case ANALYZE_MODE_FSK:
+        g_analyze.mod_hz = (g_analyze.fsk_sep_hz != 0U) ? g_analyze.fsk_sep_hz :
+                           analyze_average_mod_hz(g_analyze.freq_mod_sum_hz, g_analyze.freq_vote_count);
+        break;
+    default:
+        g_analyze.mod_hz = 0U;
+        break;
+    }
+
+    if (g_analyze.am_depth_count != 0U)
+    {
+        g_analyze.am_depth_pm = analyze_average_mod_hz(g_analyze.am_depth_sum_pm, g_analyze.am_depth_count);
+        if (best_mode == ANALYZE_MODE_AM)
+        {
+            g_analyze.param_valid_mask |= ANALYZE_PARAM_AM_DEPTH_VALID;
+        }
+    }
+
+    if (g_analyze.ask_depth_count != 0U)
+    {
+        g_analyze.ask_depth_pm = analyze_average_mod_hz(g_analyze.ask_depth_sum_pm, g_analyze.ask_depth_count);
+        if (best_mode == ANALYZE_MODE_ASK)
+        {
+            g_analyze.param_valid_mask |= ANALYZE_PARAM_ASK_DEPTH_VALID;
+        }
+    }
+
+    if (g_analyze.fm_deviation_count != 0U)
+    {
+        g_analyze.fm_deviation_hz = analyze_average_mod_hz(g_analyze.fm_deviation_sum_hz,
+                                                           g_analyze.fm_deviation_count);
+        if (best_mode == ANALYZE_MODE_FM)
+        {
+            g_analyze.param_valid_mask |= ANALYZE_PARAM_FM_DEVIATION_VALID;
+        }
+    }
+
+    if (g_analyze.fsk_sep_count != 0U)
+    {
+        g_analyze.fsk_separation_hz = analyze_average_mod_hz(g_analyze.fsk_sep_sum_hz,
+                                                             g_analyze.fsk_sep_count);
+    }
+    else
+    {
+        g_analyze.fsk_separation_hz = g_analyze.fsk_sep_hz;
+    }
+
+    if ((best_mode == ANALYZE_MODE_FSK) && (g_analyze.fsk_separation_hz != 0U))
+    {
+        g_analyze.param_valid_mask |= ANALYZE_PARAM_FSK_SEPARATION_VALID;
+        g_analyze.mod_hz = g_analyze.fsk_separation_hz;
+    }
+
+    if (g_analyze.symbol_rate_count != 0U)
+    {
+        g_analyze.symbol_rate_hz = analyze_average_mod_hz(g_analyze.symbol_rate_sum_hz,
+                                                          g_analyze.symbol_rate_count);
+        if ((best_mode == ANALYZE_MODE_ASK) ||
+            (best_mode == ANALYZE_MODE_FSK) ||
+            (best_mode == ANALYZE_MODE_PSK))
+        {
+            g_analyze.param_valid_mask |= ANALYZE_PARAM_SYMBOL_RATE_VALID;
+        }
+    }
+
+    if (g_analyze.param_confidence_count != 0U)
+    {
+        g_analyze.param_confidence_pm =
+            analyze_limit_param_confidence(analyze_average_mod_hz(g_analyze.param_confidence_sum_pm,
+                                                                  g_analyze.param_confidence_count));
+    }
+}
+
+static void analyze_process_spectra(void)
+{
+    memset(&g_iq_features, 0, sizeof(g_iq_features));
+    g_env_peak = (analyze_spectrum_peak_t){0U, 0U, 0.0f, 0.0f, 0.0f, 0U};
+    g_phase_peak = (analyze_spectrum_peak_t){0U, 0U, 0.0f, 0.0f, 0.0f, 0U};
+    g_env_peak_count = 0U;
+    g_phase_peak_count = 0U;
+    g_env_tone_fraction_pm = 0U;
+    g_env_second_ratio_pm = 0U;
+    g_env_third_ratio_pm = 0U;
+
+    if (analyze_fft_init_once() == 0U)
+    {
+        analyze_log_send("analyze: fft init failed\r\n");
+        return;
+    }
+
+#if (ANALYZE_IQ_SPECTRUM_ENABLE != 0U)
+    {
+        g_iq_peak = analyze_process_iq_spectrum();
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+        analyze_update_baseband_spectrum();
+#endif
+    }
+#endif
+
+#if (ANALYZE_ENV_SPECTRUM_ENABLE != 0U)
+    {
+        g_env_peak = analyze_process_rfft_spectrum("env",
+                                                   &g_env_fft_inst,
+                                                   g_env_buf,
+                                                   g_env_rfft_buf,
+                                                   g_env_spec_mag,
+                                                   g_env_spec_phase);
+        g_env_peak_count = analyze_count_rfft_strong_peaks(g_env_spec_mag, &g_env_peak);
+        g_env_tone_fraction_pm = analyze_rfft_tone_fraction_pm(g_env_spec_mag, &g_env_peak);
+        analyze_update_env_side_peak_ratios();
+    }
+#endif
+
+#if (ANALYZE_FREQ_SPECTRUM_ENABLE != 0U)
+    {
+        g_phase_peak = analyze_process_rfft_spectrum("freq",
+                                                     &g_phase_fft_inst,
+                                                     g_freq_dev_buf,
+                                                     g_phase_rfft_buf,
+                                                     g_phase_spec_mag,
+                                                     g_phase_spec_phase);
+        g_phase_peak_count = analyze_count_rfft_strong_peaks(g_phase_spec_mag, &g_phase_peak);
+    }
+#endif
+
+    g_analyze.iq_occ_hz = g_iq_features.occ_hz;
+    g_analyze.iq_occ99_hz = g_iq_features.occ99_hz;
+    g_analyze.iq_score_pm = g_iq_features.score_pm;
+    g_analyze.env_iq_ratio_pm = analyze_ratio_pm(g_env_peak.mag, g_iq_peak.mag);
+    if (g_iq_features.fsk_sep_hz != 0U)
+    {
+        g_analyze.fsk_sep_hz = g_iq_features.fsk_sep_hz;
+    }
+}
+
+static uint8_t analyze_summary_stage_enabled(uint8_t stage)
+{
+    switch (stage)
+    {
+    case 1U:
+#if (ANALYZE_IQ_SPECTRUM_ENABLE != 0U)
+        return 1U;
+#else
+        return 0U;
+#endif
+    case 2U:
+#if (ANALYZE_ENV_SPECTRUM_ENABLE != 0U)
+        return 1U;
+#else
+        return 0U;
+#endif
+    case 3U:
+#if (ANALYZE_PHASE_SPECTRUM_ENABLE != 0U)
+        return 1U;
+#else
+        return 0U;
+#endif
+    default:
+        return 0U;
+    }
+}
+
+static uint8_t analyze_full_stage_enabled(uint8_t stage)
+{
+    switch (stage)
+    {
+    case 1U:
+#if ((ANALYZE_IQ_SPECTRUM_ENABLE != 0U) && (ANALYZE_IQ_SPECTRUM_FULL_LOG_ENABLE != 0U))
+        return 1U;
+#else
+        return 0U;
+#endif
+    case 2U:
+#if ((ANALYZE_ENV_SPECTRUM_ENABLE != 0U) && (ANALYZE_ENV_SPECTRUM_FULL_LOG_ENABLE != 0U))
+        return 1U;
+#else
+        return 0U;
+#endif
+    case 3U:
+#if ((ANALYZE_PHASE_SPECTRUM_ENABLE != 0U) && (ANALYZE_PHASE_SPECTRUM_FULL_LOG_ENABLE != 0U))
+        return 1U;
+#else
+        return 0U;
+#endif
+    default:
+        return 0U;
+    }
+}
+
+static uint32_t analyze_full_stage_limit(uint8_t stage)
+{
+    if (stage == 1U)
+    {
+        return ANALYZE_FFT_N;
+    }
+
+    if ((stage == 2U) || (stage == 3U))
+    {
+        return ANALYZE_FFT_HALF_N;
+    }
+
+    return 0U;
+}
+
+static void analyze_advance_summary_stage(void)
+{
+    while ((g_analyze_log.summary_stage != 0U) &&
+           (g_analyze_log.summary_stage <= 3U) &&
+           (analyze_summary_stage_enabled(g_analyze_log.summary_stage) == 0U))
+    {
+        g_analyze_log.summary_stage++;
+    }
+
+    if (g_analyze_log.summary_stage > 3U)
+    {
+        g_analyze_log.summary_stage = 0U;
+    }
+}
+
+static void analyze_advance_full_stage(void)
+{
+    while ((g_analyze_log.full_stage != 0U) &&
+           (g_analyze_log.full_stage <= 3U) &&
+           (analyze_full_stage_enabled(g_analyze_log.full_stage) == 0U))
+    {
+        g_analyze_log.full_stage++;
+        g_analyze_log.full_bin = 0U;
+    }
+
+    if (g_analyze_log.full_stage > 3U)
+    {
+        g_analyze_log.full_stage = 0U;
+        g_analyze_log.full_bin = 0U;
+    }
+}
+
+static void analyze_log_prepare_after_done(void)
+{
+#if (ANALYZE_RESULT_LOG_ENABLE != 0U)
+    g_analyze_log.result_pending = 1U;
+#endif
+
+#if (ANALYZE_DEPTH_LOG_ENABLE != 0U)
+    g_analyze_log.depth_avg_pending = 1U;
+#endif
+
+#if ((ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U) && (ANALYZE_BASEBAND_SPECTRUM_LOG_ENABLE != 0U))
+    if (g_baseband_spec_valid != 0U)
+    {
+        g_analyze_log.bbsp_pending = 1U;
+        g_analyze_log.bbsp_index = 0U;
+    }
+#endif
+
+#if (ANALYZE_SPECTRUM_SUMMARY_LOG_ENABLE != 0U)
+    g_analyze_log.summary_stage = 1U;
+    analyze_advance_summary_stage();
+#endif
+
+    g_analyze_log.full_stage = 1U;
+    g_analyze_log.full_bin = 0U;
+    analyze_advance_full_stage();
+
+    if ((g_analyze_log.summary_stage != 0U) || (g_analyze_log.full_stage != 0U))
+    {
+        g_analyze_log.format_pending = 1U;
+    }
+}
+
+static uint8_t analyze_log_emit_summary_once(void)
+{
+    analyze_advance_summary_stage();
+
+    switch (g_analyze_log.summary_stage)
+    {
+    case 1U:
+        analyze_log_spectrum_summary(1U, &g_iq_peak);
+        break;
+    case 2U:
+        analyze_log_spectrum_summary(2U, &g_env_peak);
+        break;
+    case 3U:
+        analyze_log_spectrum_summary(3U, &g_phase_peak);
+        break;
+    default:
+        return 0U;
+    }
+
+    g_analyze_log.summary_stage++;
+    analyze_advance_summary_stage();
+    return 1U;
+}
+
+#if ((ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U) && (ANALYZE_BASEBAND_SPECTRUM_LOG_ENABLE != 0U))
+static uint8_t analyze_log_emit_bbsp_once(void)
+{
+    char log_buf[80];
+    int n;
+    uint16_t idx = g_analyze_log.bbsp_index;
+    int32_t freq_hz;
+
+    if ((g_analyze_log.bbsp_pending == 0U) || (g_baseband_spec_valid == 0U))
+    {
+        return 0U;
+    }
+
+    if (idx >= ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT)
+    {
+        g_analyze_log.bbsp_pending = 0U;
+        g_analyze_log.bbsp_index = 0U;
+        return 0U;
+    }
+
+    freq_hz = ANALYZE_BASEBAND_SPECTRUM_START_HZ +
+              ((int32_t)idx * (int32_t)ANALYZE_BASEBAND_SPECTRUM_STEP_HZ);
+    n = snprintf(log_buf,
+                 sizeof(log_buf),
+                 "bbsp:%ld,%d,%u\r\n",
+                 (long)freq_hz,
+                 (int)g_baseband_spec_db_x10[idx],
+                 (unsigned int)idx);
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        analyze_log_send(log_buf);
+    }
+
+    g_analyze_log.bbsp_index++;
+    return 1U;
+}
+#endif
+
+static uint8_t analyze_log_emit_full_once(void)
+{
+    uint8_t stage;
+    uint32_t bin;
+    uint32_t limit;
+
+    analyze_advance_full_stage();
+    stage = g_analyze_log.full_stage;
+    bin = g_analyze_log.full_bin;
+    limit = analyze_full_stage_limit(stage);
+
+    if ((stage == 0U) || (bin >= limit))
+    {
+        if (stage != 0U)
+        {
+            g_analyze_log.full_stage++;
+            g_analyze_log.full_bin = 0U;
+            analyze_advance_full_stage();
+        }
+        return 0U;
+    }
+
+    if (stage == 1U)
+    {
+        analyze_log_spectrum_point(1U, analyze_bin_to_hz(bin), g_iq_spec_mag[bin], g_iq_spec_phase[bin], bin);
+    }
+    else if (stage == 2U)
+    {
+        analyze_log_spectrum_point(2U, analyze_bin_to_hz(bin), g_env_spec_mag[bin], g_env_spec_phase[bin], bin);
+    }
+    else
+    {
+        analyze_log_spectrum_point(3U, analyze_bin_to_hz(bin), g_phase_spec_mag[bin], g_phase_spec_phase[bin], bin);
+    }
+
+    g_analyze_log.full_bin++;
+    if (g_analyze_log.full_bin >= limit)
+    {
+        g_analyze_log.full_stage++;
+        g_analyze_log.full_bin = 0U;
+        analyze_advance_full_stage();
+    }
+
+    return 1U;
+}
+
+void analyze_start(uint32_t center_hz)
+{
+    /* 正在分析时拒绝重复启动，避免外部误调用把当前状态清零。 */
+    if ((g_analyze.active != 0U) && (g_analyze.done == 0U))
+    {
+        return;
+    }
+
+#if (ANALYZE_START_LOG_ENABLE != 0U)
+    char log_buf[128];
+    int n = snprintf(log_buf, sizeof(log_buf), "analyze: start, receive center_hz=%luHz\r\n", (unsigned long)center_hz);
+    if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+    {
+        analyze_log_send(log_buf);
+    }
+#endif
+
+    memset(&g_analyze, 0, sizeof(g_analyze));
+    memset(&g_analyze_log, 0, sizeof(g_analyze_log));
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+    g_baseband_spec_valid = 0U;
+#endif
+    g_analyze.active = 1U;
+    g_analyze.done = 0U;
+    g_analyze.center_hz = center_hz;
+    g_analyze.mode = ANALYZE_MODE_UNKNOWN;
+    g_analyze.settle_left = ANALYZE_SETTLE_BLOCKS;
+}
+
+void analyze_set_expected_center_hz(uint32_t expected_center_hz)
+{
+    /* 设置为 0 时关闭锁点偏差门限，避免普通宽带自动扫频被固定目标频率约束。 */
+    g_expected_center_hz = expected_center_hz;
+}
+
+uint8_t analyze_process_block(const uint16_t *i_buf,
+                              const uint16_t *q_buf,
+                              uint32_t sample_cnt)
+{
+    /* 未启动或已经完成时，不消费 ADC 块 */
+    if (g_analyze.active == 0U)
+    {
+        return g_analyze.done;
+    }
+    if (g_analyze.settle_left > 0U)
+    {
+#if (ANALYZE_SETTLE_LOG_ENABLE != 0U)
+        char log_buf[96];
+        int n = snprintf(log_buf,
+                         sizeof(log_buf),
+                         "analyze: Wait for stability=%u\r\n",
+                         (unsigned int)g_analyze.settle_left);
+
+        if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+        {
+            analyze_log_send(log_buf);
+        }
+#endif
+
+        g_analyze.settle_left--;
+        return 0U;
+    }
+
+    if ((i_buf == NULL) || (q_buf == NULL) || (sample_cnt < ANALYZE_FFT_N))
+    {
+        return 0U;
+    }
+
+    memcpy(g_analyze_i_raw, i_buf, ANALYZE_FFT_N * sizeof(uint16_t));   /* 复制处理块 */
+    memcpy(g_analyze_q_raw, q_buf, ANALYZE_FFT_N * sizeof(uint16_t));
+
+    g_analyze.depth_pm = analyze_fill_env_buffer(g_analyze_i_raw,g_analyze_q_raw,ANALYZE_FFT_N);
+    analyze_process_spectra();
+    analyze_accumulate_block_result();
+
+#if (ANALYZE_DEPTH_LOG_ENABLE != 0U)
+    {
+        char log_buf[96];
+        int n = snprintf(log_buf,
+                         sizeof(log_buf),
+                         "analyze: depth=%lupm\r\n",
+                         (unsigned long)g_analyze.depth_pm);
+
+        if ((n > 0) && ((size_t)n < sizeof(log_buf)))
+        {
+            analyze_log_send(log_buf);
+        }
+    }
+#endif
+
+    g_analyze.depth_sum_pm += g_analyze.depth_pm;
+    g_analyze.vote_count++;
+
+    if (g_analyze.vote_count >= ANALYZE_DEPTH_BLOCKS)
+    {
+        g_analyze.depth_pm = g_analyze.depth_sum_pm / ANALYZE_DEPTH_BLOCKS;
+        analyze_finalize_result();
+        g_analyze.done = 1U;
+        g_analyze.active = 0U;
+        analyze_log_prepare_after_done();
+    }
+
+    return g_analyze.done;
+}
+
+uint8_t analyze_is_done(void)
+{
+    return g_analyze.done;
+}
+
+void analyze_get_result(analyze_result_t *result_out)
+{
+    if (result_out == NULL)
+    {
+        return;
+    }
+
+    result_out->mode = g_analyze.mode;
+    result_out->center_hz = g_analyze.center_hz;
+    result_out->mod_hz = g_analyze.mod_hz;
+    result_out->depth_pm = g_analyze.depth_pm;
+    result_out->low_if_hz = g_analyze.low_if_hz;
+    result_out->done = g_analyze.done;
+    result_out->am_depth_pm = g_analyze.am_depth_pm;
+    result_out->ask_depth_pm = g_analyze.ask_depth_pm;
+    result_out->fm_deviation_hz = g_analyze.fm_deviation_hz;
+    result_out->fsk_separation_hz = g_analyze.fsk_separation_hz;
+    result_out->symbol_rate_hz = g_analyze.symbol_rate_hz;
+    result_out->param_valid_mask = g_analyze.param_valid_mask;
+    result_out->param_confidence_pm = g_analyze.param_confidence_pm;
+}
+
+uint8_t analyze_get_baseband_spectrum(analyze_baseband_spectrum_view_t *view_out)
+{
+    if (view_out == NULL)
+    {
+        return 0U;
+    }
+
+    memset(view_out, 0, sizeof(*view_out));
+#if (ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U)
+    view_out->start_hz = ANALYZE_BASEBAND_SPECTRUM_START_HZ;
+    view_out->step_hz = ANALYZE_BASEBAND_SPECTRUM_STEP_HZ;
+    view_out->count = ANALYZE_BASEBAND_SPECTRUM_POINT_COUNT;
+    view_out->db_x10 = g_baseband_spec_db_x10;
+    view_out->valid = g_baseband_spec_valid;
+    return g_baseband_spec_valid;
+#else
+    return 0U;
+#endif
+}
+
+uint8_t analyze_is_active(void)
+{
+    return g_analyze.active;
+}
+
+uint8_t analyze_log_is_busy(void)
+{
+#if (ANALYZE_LOG_ENABLE != 0U)
+    if ((g_analyze_log.result_pending != 0U) ||
+        (g_analyze_log.depth_avg_pending != 0U) ||
+        (g_analyze_log.bbsp_pending != 0U) ||
+        (g_analyze_log.summary_stage != 0U) ||
+        (g_analyze_log.full_stage != 0U) ||
+        (g_analyze_log.format_pending != 0U))
+    {
+        return 1U;
+    }
+#endif
+
+    return 0U;
+}
+
+void analyze_log_flush_step(uint8_t max_lines)
+{
+    uint8_t sent = 0U;
+
+#if (ANALYZE_LOG_ENABLE == 0U)
+    (void)max_lines;
+    return;
+#endif
+
+    while (sent < max_lines)
+    {
+        if (g_analyze_log.result_pending != 0U)
+        {
+            g_analyze_log.result_pending = 0U;
+            analyze_log_result();
+            sent++;
+            continue;
+        }
+
+        if (g_analyze_log.depth_avg_pending != 0U)
+        {
+            g_analyze_log.depth_avg_pending = 0U;
+            analyze_log_depth_avg();
+            sent++;
+            continue;
+        }
+
+#if ((ANALYZE_BASEBAND_SPECTRUM_ENABLE != 0U) && (ANALYZE_BASEBAND_SPECTRUM_LOG_ENABLE != 0U))
+        if (analyze_log_emit_bbsp_once() != 0U)
+        {
+            sent++;
+            continue;
+        }
+#endif
+
+        if (analyze_log_emit_summary_once() != 0U)
+        {
+            sent++;
+            continue;
+        }
+
+        if (analyze_log_emit_full_once() != 0U)
+        {
+            sent++;
+            continue;
+        }
+
+        if (g_analyze_log.format_pending != 0U)
+        {
+            g_analyze_log.format_pending = 0U;
+            analyze_log_spectrum_format_line();
+            sent++;
+            continue;
+        }
+
+        break;
+    }
+}

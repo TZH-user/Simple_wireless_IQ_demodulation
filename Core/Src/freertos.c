@@ -26,7 +26,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "app_dds_ctrl.h" //寮曠敤 AppDdsCmd 绫诲瀷缁撴瀯浣?
+#include "app_dds_ctrl.h" // DDS command queue type
+#include "app_board_flash.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -167,7 +168,8 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
+  /* Serialize QSPI users: settings saves, sweep calibration and optional wallpaper asset. */
+  app_board_flash_rtos_init();
   /* USER CODE END RTOS_MUTEX */
 
   /* Create the semaphores(s) */

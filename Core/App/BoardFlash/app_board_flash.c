@@ -1,6 +1,7 @@
 #include "app_board_flash.h"
 
 #include "board_flash_w25q64.h"
+#include "cmsis_os2.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -9,6 +10,29 @@
 #define APP_BOARD_FLASH_SELF_TEST_LEN 320U
 
 static bool g_board_flash_ready = false;
+static osMutexId_t g_board_flash_mutex = NULL;
+static const osMutexAttr_t g_board_flash_mutex_attr = { .name = "BoardFlashMutex" };
+
+void app_board_flash_rtos_init(void)
+{
+  if (g_board_flash_mutex == NULL) {
+    g_board_flash_mutex = osMutexNew(&g_board_flash_mutex_attr);
+  }
+}
+
+static void app_board_flash_lock(void)
+{
+  if (g_board_flash_mutex != NULL) {
+    (void)osMutexAcquire(g_board_flash_mutex, osWaitForever);
+  }
+}
+
+static void app_board_flash_unlock(void)
+{
+  if (g_board_flash_mutex != NULL) {
+    (void)osMutexRelease(g_board_flash_mutex);
+  }
+}
 
 static app_board_flash_result_t app_board_flash_map_result(board_flash_w25q64_result_t result)
 {
@@ -58,8 +82,10 @@ app_board_flash_result_t app_board_flash_init(void)
 {
   app_board_flash_result_t result;
 
+  app_board_flash_lock();
   result = app_board_flash_map_result(board_flash_w25q64_init());
   g_board_flash_ready = (result == APP_BOARD_FLASH_OK);
+  app_board_flash_unlock();
 
   return result;
 }
@@ -72,15 +98,19 @@ app_board_flash_result_t app_board_flash_read_id(uint32_t *jedec_id)
     return APP_BOARD_FLASH_ERROR_ARG;
   }
 
+  app_board_flash_lock();
   if (!g_board_flash_ready) {
     result = app_board_flash_map_result(board_flash_w25q64_init());
     g_board_flash_ready = (result == APP_BOARD_FLASH_OK);
     if ((result != APP_BOARD_FLASH_OK) && (result != APP_BOARD_FLASH_ERROR_ID)) {
+      app_board_flash_unlock();
       return result;
     }
   }
 
-  return app_board_flash_map_result(board_flash_w25q64_read_id(jedec_id));
+  result = app_board_flash_map_result(board_flash_w25q64_read_id(jedec_id));
+  app_board_flash_unlock();
+  return result;
 }
 
 app_board_flash_result_t app_board_flash_read(uint32_t addr, uint8_t *buf, uint32_t len)
@@ -104,7 +134,10 @@ app_board_flash_result_t app_board_flash_read(uint32_t addr, uint8_t *buf, uint3
     return result;
   }
 
-  return app_board_flash_map_result(board_flash_w25q64_read(addr, buf, len));
+  app_board_flash_lock();
+  result = app_board_flash_map_result(board_flash_w25q64_read(addr, buf, len));
+  app_board_flash_unlock();
+  return result;
 }
 
 app_board_flash_result_t app_board_flash_write(uint32_t addr, const uint8_t *buf, uint32_t len)
@@ -128,7 +161,10 @@ app_board_flash_result_t app_board_flash_write(uint32_t addr, const uint8_t *buf
     return result;
   }
 
-  return app_board_flash_map_result(board_flash_w25q64_write(addr, buf, len));
+  app_board_flash_lock();
+  result = app_board_flash_map_result(board_flash_w25q64_write(addr, buf, len));
+  app_board_flash_unlock();
+  return result;
 }
 
 app_board_flash_result_t app_board_flash_erase_4k(uint32_t addr)
@@ -148,7 +184,10 @@ app_board_flash_result_t app_board_flash_erase_4k(uint32_t addr)
     return result;
   }
 
-  return app_board_flash_map_result(board_flash_w25q64_erase_4k(addr));
+  app_board_flash_lock();
+  result = app_board_flash_map_result(board_flash_w25q64_erase_4k(addr));
+  app_board_flash_unlock();
+  return result;
 }
 
 app_board_flash_result_t app_board_flash_erase_64k(uint32_t addr)
@@ -168,7 +207,10 @@ app_board_flash_result_t app_board_flash_erase_64k(uint32_t addr)
     return result;
   }
 
-  return app_board_flash_map_result(board_flash_w25q64_erase_64k(addr));
+  app_board_flash_lock();
+  result = app_board_flash_map_result(board_flash_w25q64_erase_64k(addr));
+  app_board_flash_unlock();
+  return result;
 }
 
 app_board_flash_result_t app_board_flash_self_test(uint32_t scratch_addr,

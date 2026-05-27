@@ -35,6 +35,7 @@ typedef struct
   uint8_t actual;
 } app_board_flash_test_result_t;
 
+void app_board_flash_rtos_init(void);
 app_board_flash_result_t app_board_flash_init(void);
 app_board_flash_result_t app_board_flash_read_id(uint32_t *jedec_id);
 app_board_flash_result_t app_board_flash_read(uint32_t addr, uint8_t *buf, uint32_t len);
